@@ -29,6 +29,21 @@ Available levels:
 
 Each effort level creates a separate model entry in Copilot Chat (e.g., `Claude Sonnet 4 · High`).
 
+## Fork-specific features
+
+On top of upstream, this fork adds:
+
+- **DeepSeek thinking-mode round-trip** — automatically injects `reasoning_content` at the HTTP layer for DeepSeek V3/V4 thinking models, fixing the 400 error in multi-turn / tool-call conversations.
+- **Tool schema normalization** — Copilot Chat sometimes emits tool schemas with `type: null` (e.g. `terminal_last_command`); these are auto-coerced to `type: "object"` so strict providers like DeepSeek don't reject the request.
+- **Per-model prompt caching opt-in** — set `cacheControl: true` per-model for Anthropic Claude and Google Gemini 2.5+ to get ~10% input-cost cached reads.
+- **Provider routing** — `orcp.providerRouting: { "sort": "price" }` (or `"throughput"`, `"latency"`); pin to specific providers; allow/disallow fallbacks.
+- **Default reasoning effort levels** — `orcp.defaultEffortLevels: ["high", "xhigh"]` applies to all reasoning-capable models without per-model config.
+- **Image input** — vision-capable models receive `LanguageModelDataPart` inputs as `image_url` content parts (gated on `capabilities.imageInput`).
+- **Session cost status bar** — running `$x.xxxx · N turns` in the bottom right; click for breakdown / reset.
+- **`ORCP` output channel** — full lifecycle, request shape, and error logging for debugging (see Debugging section).
+- **`ORCP: Configure Reasoning Effort for a Model` command** — Quick Pick flow to toggle effort variants per model without hand-editing JSON.
+- **Fetches all OpenRouter models** — uses the unfiltered `/models` endpoint rather than `/models/user`, which respects your account's privacy/provider preferences and was hiding most of the catalog.
+
 ## Build & install from source
 
 This fork is installed locally via VSIX so VSCode's marketplace can't auto-update it.
@@ -120,7 +135,7 @@ With `cacheControl: true`, the extension tags the first user message and the las
 2. Get your API key from [OpenRouter](https://openrouter.ai/keys)
 3. Run `ORCP: Set API Key` from the Command Palette
 4. Run `Chat: Manage Language Models` and enable models you want to be visible in Copilot Chat picker
-4. Open Copilot Chat and select model to use
+5. Open Copilot Chat and select model to use
 
 ## Configuration
 
@@ -138,18 +153,27 @@ Useful for proxies, self-hosted instances, or testing.
 
 ### `orcp.models`
 
-Per-model configuration. Keys are OpenRouter model IDs. Set `enabled` to false to hide a model. Use `effortLevels` to expose reasoning effort variants (low, medium, high) for supported models.
+Per-model configuration. Keys are OpenRouter model IDs. Fields:
+
+- `enabled` (boolean) — set to `false` to hide a model from the picker.
+- `effortLevels` (string[]) — reasoning effort variants to expose as separate picker entries: `minimal`, `low`, `medium`, `high`, `xhigh`.
+- `cacheControl` (boolean) — set to `true` for providers that require **explicit** prompt-cache markers (Anthropic Claude, Google Gemini 2.5+). Leave `false` for providers with automatic caching (DeepSeek, OpenAI).
 
 ```json
 {
   "orcp.models": {
     "anthropic/claude-sonnet-4-5": {
       "enabled": true,
+      "cacheControl": true,
       "effortLevels": ["low", "medium", "high"]
     },
-    "openai/gpt-4o": {
+    "google/gemini-2.5-pro": {
       "enabled": true,
-      "effortLevels": []
+      "cacheControl": true
+    },
+    "deepseek/deepseek-v4-pro": {
+      "enabled": true,
+      "effortLevels": ["high", "xhigh"]
     },
     "meta-llama/llama-3.3-70b-instruct": {
       "enabled": false
@@ -159,22 +183,77 @@ Per-model configuration. Keys are OpenRouter model IDs. Set `enabled` to false t
 ```
 
 **Notes:**
-- Models not listed are **enabled by default** with no effort variants
-- Effort levels only work on models that support reasoning (e.g., Claude, GPT-5)
-- Model IDs can be found in the [OpenRouter model list](https://openrouter.ai/models)
+
+- Models not listed are **enabled by default** with no effort variants and no cache markers.
+- Effort levels only work on models that support reasoning (e.g., Claude, GPT-5, DeepSeek thinking models).
+- Model IDs can be found in the [OpenRouter model list](https://openrouter.ai/models).
+- You don't have to edit this by hand — run `ORCP: Configure Reasoning Effort for a Model` to toggle effort variants via Quick Pick.
+
+### `orcp.defaultEffortLevels`
+
+Effort-level variants exposed for **every** reasoning-capable model that doesn't have an explicit `effortLevels` set in `orcp.models`. Saves typing if you want the same set of variants across the board.
+
+```json
+{
+  "orcp.defaultEffortLevels": ["high", "xhigh"]
+}
+```
+
+Set to `[]` (default) to disable global defaults — variants then only come from per-model config.
+
+### `orcp.providerRouting`
+
+OpenRouter [provider routing](https://openrouter.ai/docs/features/provider-routing). The biggest cost lever for models served by multiple providers (DeepSeek especially).
+
+```json
+{
+  "orcp.providerRouting": {
+    "sort": "price"
+  }
+}
+```
+
+Supported fields:
+
+- `sort` — `"price"` / `"throughput"` / `"latency"`.
+- `order` — array of provider names; requests are tried in order.
+- `only` — array of provider names; requests are pinned to these.
+- `allow_fallbacks` — boolean; whether routing can fall back to other providers on failure.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `ORCP: Set API Key` | Store your OpenRouter API key |
+| `ORCP: Set API Key` | Store your OpenRouter API key (encrypted in the OS keychain via VSCode's secret API) |
 | `ORCP: Clear API Key` | Remove the stored API key |
+| `ORCP: Show Session Details` | Token breakdown + cost for the current session; also triggered by clicking the status bar |
+| `ORCP: Configure Reasoning Effort for a Model` | Quick Pick to toggle effort variants per model without editing settings JSON |
+| `ORCP: Reload Extension` | Re-run the registration flow — refetches the model list and reapplies config |
 
 ## Requirements
 
 - VS Code 1.117.0 or later
 - Copilot Chat extension installed
 - OpenRouter API key ([get one here](https://openrouter.ai/keys))
+
+## Debugging
+
+The extension writes detailed logs to a dedicated **ORCP** output channel:
+
+1. Open `View → Output`
+2. Pick **ORCP** from the dropdown at the top right of the Output panel
+
+What gets logged:
+
+- Activation and registration lifecycle (`doRegister #N starting/complete`)
+- Models fetched from OpenRouter + the filtered set actually registered
+- Every chat request: model, effort, message count, tool count, cache-control flag
+- Reasoning stream details (per-chunk arrivals, merged-by-index final shape)
+- `beforeRequest` hook patches (e.g., `reasoning_content` injection for DeepSeek)
+- Tool schema fixups (which Copilot tools had `type: null` and were normalized)
+- Full HTTP error bodies on failure — including the actual API rejection text from the provider
+
+When something fails, the ORCP channel is the first place to look — the actual upstream error appears there, not just the generic "Provider returned error" surface message.
 
 ## Troubleshooting
 
