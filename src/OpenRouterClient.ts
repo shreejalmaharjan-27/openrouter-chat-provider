@@ -23,6 +23,7 @@ export class OpenRouterClient {
   constructor(
     private readonly secrets: SecretsManager,
     private readonly baseUrl: string,
+    private readonly providerRouting: Record<string, unknown> = {},
   ) {}
 
   private async getClient(): Promise<OpenRouter> {
@@ -91,6 +92,10 @@ export class OpenRouterClient {
       stream: true,
       streamOptions: { includeUsage: true },
     };
+
+    if (Object.keys(this.providerRouting).length > 0) {
+      (chatRequest as unknown as { provider: Record<string, unknown> }).provider = this.providerRouting;
+    }
 
     if (opts.effort) {
       chatRequest.reasoning = { effort: opts.effort };

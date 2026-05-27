@@ -25,6 +25,7 @@ export async function handleStream(
   let costUSD: number | undefined;
 
   const toolCallBuffers = new Map<number, ToolCallBuffer>();
+  const accumulatedReasoningDetails: unknown[] = [];
 
   for await (const chunk of stream) {
     if (token.isCancellationRequested) {
@@ -50,10 +51,19 @@ export async function handleStream(
       continue;
     }
 
-    if (delta.reasoning) {
+    const deltaDetails = (delta as { reasoningDetails?: unknown[] }).reasoningDetails;
+    if (Array.isArray(deltaDetails) && deltaDetails.length > 0) {
+      accumulatedReasoningDetails.push(...deltaDetails);
+    }
+
+    if (delta.reasoning || (Array.isArray(deltaDetails) && deltaDetails.length > 0)) {
       const hasThinkingPart = 'LanguageModelThinkingPart' in vscode;
       if (hasThinkingPart) {
-        const thinkingPart = new vscode.LanguageModelThinkingPart(delta.reasoning);
+        const thinkingPart = new vscode.LanguageModelThinkingPart(
+          delta.reasoning ?? '',
+          undefined,
+          { reasoningDetails: [...accumulatedReasoningDetails] },
+        );
         progress.report(thinkingPart as vscode.LanguageModelResponsePart);
       }
     }

@@ -6,11 +6,13 @@ export type { ReasoningEffort } from '@openrouter/sdk/models';
 export interface ModelEntry extends vscode.LanguageModelChatInformation {
   readonly orModelId: string;
   readonly effort: ReasoningEffort | null;
+  readonly cacheControl: boolean;
 }
 
 export interface ModelConfig {
   enabled: boolean;
   effortLevels: ReasoningEffort[];
+  cacheControl?: boolean;
 }
 
 export interface TurnRecord {

@@ -20,7 +20,7 @@ export class ModelRegistry {
 
   readonly onDidChange = new vscode.EventEmitter<void>();
 
-  rebuild(rawModels: Model[], modelConfigs: Record<string, ModelConfig>): void {
+  rebuild(rawModels: Model[], modelConfigs: Record<string, ModelConfig>, defaultEffortLevels: ReasoningEffort[] = []): void {
     this.entries.clear();
 
     for (const model of rawModels) {
@@ -43,12 +43,17 @@ export class ModelRegistry {
       const supportsImageInput = model.architecture.inputModalities.includes(InputModality.Image);
       const supportsReasoning = model.supportedParameters.includes(Parameter.Reasoning);
       const maxOutputTokens = model.topProvider.maxCompletionTokens ?? 4096;
+      const cacheControl = config?.cacheControl ?? false;
+      const isFree = model.id.endsWith(':free');
+      const tooltip = isFree
+        ? `${model.description}\n\nFree tier — rate-limited (~100 req/day, ~50K tokens/req). Limits may change.`
+        : model.description;
 
       const baseEntry: ModelEntry = {
         id: model.id,
         name: model.name,
         family: deriveFamily(model.id),
-        tooltip: model.description,
+        tooltip,
         detail: 'ORCP',
         version: model.id,
         maxInputTokens: model.contextLength ?? 0,
@@ -60,17 +65,22 @@ export class ModelRegistry {
 
         orModelId: model.id,
         effort: null,
+        cacheControl,
       };
 
       this.entries.set(baseEntry.id, baseEntry);
 
-      if (supportsReasoning && config?.effortLevels?.length > 0) {
-        for (const effort of config.effortLevels) {
+      const effortLevels: ReasoningEffort[] = config?.effortLevels && config.effortLevels.length > 0
+        ? config.effortLevels
+        : defaultEffortLevels;
+
+      if (supportsReasoning && effortLevels.length > 0) {
+        for (const effort of effortLevels) {
           const effortEntry: ModelEntry = {
             id: model.id + '::' + effort,
             name: model.name + ' · ' + capitalize(effort),
             family: deriveFamily(model.id),
-            tooltip: model.description,
+            tooltip,
             detail: 'ORCP',
             version: model.id,
             maxInputTokens: model.contextLength ?? 0,
@@ -82,6 +92,7 @@ export class ModelRegistry {
 
             orModelId: model.id,
             effort: effort as ReasoningEffort,
+            cacheControl,
           };
           this.entries.set(effortEntry.id, effortEntry);
         }

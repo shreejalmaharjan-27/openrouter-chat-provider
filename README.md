@@ -43,14 +43,13 @@ This fork is installed locally via VSIX so VSCode's marketplace can't auto-updat
 
 ```bash
 npm install
-npm run package          # produces dist/extension.js
-npx @vscode/vsce package # produces openrouter-chat-provider-0.1.0-local.1.vsix
+npm run local-build      # bundles + packages → openrouter-chat-provider-0.1.0-local.7.vsix
 ```
 
 ### Install
 
 ```bash
-code --install-extension openrouter-chat-provider-0.1.0-local.1.vsix
+code --install-extension openrouter-chat-provider-0.1.0-local.7.vsix
 ```
 
 ### Disable auto-update (important)
@@ -67,7 +66,7 @@ the publisher to break that match, but belt-and-braces:
 
 ```bash
 code --list-extensions --show-versions
-# Should show: shreejalmaharjan-27.openrouter-chat-provider@0.1.0-local.1
+# Should show: shreejalmaharjan-27.openrouter-chat-provider@0.1.0-local.7
 ```
 
 ### Upgrade later
@@ -76,6 +75,44 @@ code --list-extensions --show-versions
 2. Re-audit the diff
 3. Bump the `-local.N` suffix in `package.json`
 4. Repeat the Build + Install steps above
+
+## Session cost status bar
+
+A status-bar item on the right shows running session cost and turn count (e.g. `$0.0234 · 4 turns`). Click it to see a breakdown of tokens by category (prompt / completion / reasoning) and reset the counter. Cost is taken from OpenRouter's per-turn usage reporting; the counter resets when the extension reloads.
+
+## Tips for DeepSeek users (cheap / free)
+
+DeepSeek is the budget alternative to Claude / GPT and works well in Copilot Chat.
+
+```json
+{
+  "orcp.models": {
+    "deepseek/deepseek-v4-pro":        { "enabled": true, "effortLevels": ["high", "xhigh"] },
+    "deepseek/deepseek-v4-flash":      { "enabled": true },
+    "deepseek/deepseek-v4-flash:free": { "enabled": true }
+  },
+  "orcp.providerRouting": { "sort": "price" }
+}
+```
+
+- **Don't** set `cacheControl: true` on DeepSeek entries — DeepSeek caches prompt prefixes **automatically** at the provider level; you just get the discount.
+- `orcp.providerRouting: { "sort": "price" }` is the biggest cost lever — multiple providers serve each DeepSeek model and per-token prices differ.
+- `:free` variants are rate-limited (~100 req/day, ~50K tokens/req) — fine for casual chat, not for heavy iterative coding.
+
+## Tips for Anthropic / Gemini users (caching)
+
+Both Anthropic Claude and Google Gemini 2.5+ require **explicit** prompt-cache markers. Opt in per model:
+
+```json
+{
+  "orcp.models": {
+    "anthropic/claude-sonnet-4-5": { "enabled": true, "cacheControl": true, "effortLevels": ["high"] },
+    "google/gemini-2.5-pro":       { "enabled": true, "cacheControl": true }
+  }
+}
+```
+
+With `cacheControl: true`, the extension tags the first user message and the last completed assistant message with `cache_control: { type: "ephemeral" }`. On subsequent turns the prior conversation reads from cache at ~10% of input cost. Verify in your OpenRouter dashboard's usage breakdown — cached input tokens appear as a separate line item.
 
 ## Quick Start
 

@@ -1,6 +1,7 @@
 {
   "activationEvents": [
-    "onLanguageModelChatProvider:ostash.openrouter"
+    "onLanguageModelChatProvider:ostash.openrouter",
+    "onStartupFinished"
   ],
   "author": "Viktor Ostashevskyi",
   "bugs": {
@@ -21,6 +22,11 @@
         "category": "ORCP",
         "command": "orcp.clearApiKey",
         "title": "Clear API Key"
+      },
+      {
+        "category": "ORCP",
+        "command": "orcp.showSessionDetails",
+        "title": "Show Session Details"
       }
     ],
     "configuration": {
@@ -34,8 +40,49 @@
         "orcp.models": {
           "title": "Models",
           "default": {},
-          "description": "Per-model configuration. Keys are OpenRouter model IDs (e.g. 'anthropic/claude-sonnet-4-5'). Set enabled to false to hide a model. Use effortLevels to expose reasoning effort variants (low, medium, high) for supported models. Example: { \"anthropic/claude-sonnet-4-5\": { \"enabled\": true, \"effortLevels\": [\"low\", \"medium\", \"high\"] } }. Models not listed are enabled by default with no effort variants.",
+          "description": "Per-model configuration. Keys are OpenRouter model IDs. Set 'enabled' to false to hide a model. Use 'effortLevels' to expose reasoning effort variants (minimal, low, medium, high, xhigh). Set 'cacheControl' to true for models that require explicit prompt-cache markers (Anthropic Claude, Google Gemini 2.5+); leave false for providers with automatic caching (DeepSeek, OpenAI). Example: { \"anthropic/claude-sonnet-4-5\": { \"enabled\": true, \"cacheControl\": true, \"effortLevels\": [\"high\"] }, \"deepseek/deepseek-v4-pro\": { \"enabled\": true, \"effortLevels\": [\"high\", \"xhigh\"] } }. Models not listed are enabled by default with no effort variants and no cache markers.",
           "type": "object"
+        },
+        "orcp.defaultEffortLevels": {
+          "title": "Default Reasoning Effort Levels",
+          "default": [],
+          "description": "Effort-level variants to expose for ALL reasoning-capable models that don't have an explicit 'effortLevels' configured in 'orcp.models'. Example: [\"high\", \"xhigh\"] adds those two variants for every reasoning model. Set to [] to disable defaults and only get variants from per-model config.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["minimal", "low", "medium", "high", "xhigh"]
+          }
+        },
+        "orcp.providerRouting": {
+          "title": "Provider Routing",
+          "default": {},
+          "description": "OpenRouter provider routing. Example: { \"sort\": \"price\" } picks the cheapest provider serving each model; { \"only\": [\"DeepSeek\"] } pins requests to the first-party DeepSeek provider. See https://openrouter.ai/docs/features/provider-routing.",
+          "type": "object",
+          "properties": {
+            "sort": {
+              "type": "string",
+              "enum": [
+                "price",
+                "throughput",
+                "latency"
+              ]
+            },
+            "order": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "only": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "allow_fallbacks": {
+              "type": "boolean"
+            }
+          }
         }
       },
       "title": "OpenRouter Chat Provider"
@@ -52,7 +99,7 @@
   },
   "description": "Access 300+ OpenRouter models in Copilot Chat",
   "devDependencies": {
-    "@types/node": "^22.x",
+    "@types/node": "^22.19.19",
     "@types/vscode": "^1.117.0",
     "esbuild": "^0.28.0",
     "eslint": "^10.3.0",
@@ -82,11 +129,12 @@
     "check-types": "tsc --noEmit",
     "compile": "npm run check-types && node esbuild.js",
     "clean": "node -e \"fs.rmSync('dist', {recursive: true, force: true})\"",
+    "local-build": "npm run package && npx @vscode/vsce package",
     "package": "npm run check-types && node esbuild.js --production",
     "vscode:prepublish": "npm run clean && npm run package",
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json"
   },
-  "version": "0.1.0-local.1"
+  "version": "0.1.0-local.7"
 }

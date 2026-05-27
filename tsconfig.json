@@ -5,7 +5,8 @@
     "outDir": "./out",
     "rootDir": "./src",
     "strict": true,
-    "moduleResolution": "bundler"
+    "moduleResolution": "bundler",
+    "types": ["node"]
   },
   "include": [
     "src/**/*",
