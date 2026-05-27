@@ -4,7 +4,7 @@
   ],
   "author": "Viktor Ostashevskyi",
   "bugs": {
-    "url": "https://github.com/ostash/openrouter-chat-provider/issues"
+    "url": "https://github.com/shreejalmaharjan-27/openrouter-chat-provider/issues"
   },
   "categories": [
     "AI",
@@ -73,10 +73,10 @@
   "license": "MIT",
   "main": "./dist/extension.js",
   "name": "openrouter-chat-provider",
-  "publisher": "ostash",
+  "publisher": "shreejalmaharjan-27",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ostash/openrouter-chat-provider.git"
+    "url": "git+https://github.com/shreejalmaharjan-27/openrouter-chat-provider.git"
   },
   "scripts": {
     "check-types": "tsc --noEmit",
@@ -88,5 +88,5 @@
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json"
   },
-  "version": "0.1.0"
+  "version": "0.1.0-local.1"
 }

@@ -29,6 +29,54 @@ Available levels:
 
 Each effort level creates a separate model entry in Copilot Chat (e.g., `Claude Sonnet 4 · High`).
 
+## Build & install from source
+
+This fork is installed locally via VSIX so VSCode's marketplace can't auto-update it.
+
+### Prerequisites
+
+- Node.js 22+ and npm
+- VSCode 1.117+
+- The `code` CLI on your PATH (install from VSCode: `Cmd/Ctrl+Shift+P` → "Shell Command: Install 'code' command in PATH")
+
+### Build
+
+```bash
+npm install
+npm run package          # produces dist/extension.js
+npx @vscode/vsce package # produces openrouter-chat-provider-0.1.0-local.1.vsix
+```
+
+### Install
+
+```bash
+code --install-extension openrouter-chat-provider-0.1.0-local.1.vsix
+```
+
+### Disable auto-update (important)
+
+Even after a VSIX install, VSCode will auto-update from the marketplace if the
+`{publisher}.{name}` identifier matches. This fork uses `shreejalmaharjan-27` as
+the publisher to break that match, but belt-and-braces:
+
+- **Per-extension**: in the Extensions view, right-click "OpenRouter Chat Provider"
+  → uncheck **Auto Update**.
+- **Or globally**: set `"extensions.autoUpdate": false` in settings.
+
+### Verify
+
+```bash
+code --list-extensions --show-versions
+# Should show: shreejalmaharjan-27.openrouter-chat-provider@0.1.0-local.1
+```
+
+### Upgrade later
+
+1. `git pull` from upstream into your fork
+2. Re-audit the diff
+3. Bump the `-local.N` suffix in `package.json`
+4. Repeat the Build + Install steps above
+
 ## Quick Start
 
 1. Install the extension
