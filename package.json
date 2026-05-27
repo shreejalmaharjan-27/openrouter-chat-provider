@@ -32,6 +32,11 @@
         "category": "ORCP",
         "command": "orcp.reloadExtension",
         "title": "Reload Extension"
+      },
+      {
+        "category": "ORCP",
+        "command": "orcp.configureEffort",
+        "title": "Configure Reasoning Effort for a Model"
       }
     ],
     "configuration": {
@@ -141,5 +146,5 @@
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json"
   },
-  "version": "0.1.0-local.11"
+  "version": "0.1.0-local.13"
 }

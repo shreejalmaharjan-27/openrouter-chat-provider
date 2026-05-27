@@ -7,6 +7,7 @@ export interface ModelEntry extends vscode.LanguageModelChatInformation {
   readonly orModelId: string;
   readonly effort: ReasoningEffort | null;
   readonly cacheControl: boolean;
+  readonly supportsReasoning: boolean;
 }
 
 export interface ModelConfig {

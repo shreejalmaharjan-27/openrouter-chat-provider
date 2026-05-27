@@ -118,9 +118,7 @@ export class OpenRouterClient {
 
   async listModels(): Promise<Model[]> {
     const client = await this.getClient();
-    const response = await client.models.listForUser(
-      { bearer: this.cachedApiKey! },
-    );
+    const response = await client.models.list();
     return response.data;
   }
 

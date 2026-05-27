@@ -42,6 +42,45 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         tracker.reset();
       }
     }),
+
+    vscode.commands.registerCommand('orcp.configureEffort', async () => {
+      const models = current?.listReasoningModels() ?? [];
+      if (models.length === 0) {
+        vscode.window.showInformationMessage('ORCP: no reasoning-capable models are registered. Set your API key first.');
+        return;
+      }
+
+      const pickedModel = await vscode.window.showQuickPick(
+        models.map((m) => ({ label: m.name, description: m.id, modelId: m.id })),
+        { title: 'ORCP: pick a model to configure reasoning effort', matchOnDescription: true },
+      );
+      if (!pickedModel) return;
+
+      const cfg = vscode.workspace.getConfiguration('orcp');
+      const allModels: Record<string, { enabled?: boolean; effortLevels?: string[]; cacheControl?: boolean }>
+        = cfg.get('models', {});
+      const currentEfforts: string[] = allModels[pickedModel.modelId]?.effortLevels ?? [];
+
+      const efforts = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+      const picked = await vscode.window.showQuickPick(
+        efforts.map((e) => ({ label: e, picked: currentEfforts.includes(e) })),
+        {
+          canPickMany: true,
+          title: `ORCP: effort variants for ${pickedModel.label} (each becomes a separate entry in the picker)`,
+        },
+      );
+      if (!picked) return;
+
+      const existing = allModels[pickedModel.modelId] ?? { enabled: true };
+      existing.effortLevels = picked.map((p) => p.label);
+      allModels[pickedModel.modelId] = existing;
+
+      await cfg.update('models', allModels, vscode.ConfigurationTarget.Global);
+      const summary = existing.effortLevels.length > 0
+        ? existing.effortLevels.join(', ')
+        : '(none — only the base entry will appear)';
+      vscode.window.showInformationMessage(`ORCP: ${pickedModel.label} effort variants → ${summary}`);
+    }),
   );
 
   context.subscriptions.push(

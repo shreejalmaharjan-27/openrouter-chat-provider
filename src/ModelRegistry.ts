@@ -66,6 +66,7 @@ export class ModelRegistry {
         orModelId: model.id,
         effort: null,
         cacheControl,
+        supportsReasoning,
       };
 
       this.entries.set(baseEntry.id, baseEntry);
@@ -93,6 +94,7 @@ export class ModelRegistry {
             orModelId: model.id,
             effort: effort as ReasoningEffort,
             cacheControl,
+            supportsReasoning,
           };
           this.entries.set(effortEntry.id, effortEntry);
         }

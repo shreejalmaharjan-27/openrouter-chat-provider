@@ -10,6 +10,7 @@ import { ModelConfig, ReasoningEffort } from './types';
 
 export interface RegistrationResult extends vscode.Disposable {
   readonly tracker: SessionTracker;
+  readonly listReasoningModels: () => Array<{ id: string; name: string }>;
 }
 
 export async function registerAll(
@@ -59,6 +60,18 @@ export async function registerAll(
 
   return {
     tracker,
+    listReasoningModels: () => {
+      const seen = new Set<string>();
+      const out: Array<{ id: string; name: string }> = [];
+      for (const entry of registry.getAll()) {
+        if (!entry.supportsReasoning) continue;
+        if (entry.effort !== null) continue;
+        if (seen.has(entry.orModelId)) continue;
+        seen.add(entry.orModelId);
+        out.push({ id: entry.orModelId, name: entry.name });
+      }
+      return out.sort((a, b) => a.name.localeCompare(b.name));
+    },
     dispose() {
       providerDisposable.dispose();
       registry.dispose();
