@@ -1,5 +1,6 @@
 import { SecretsManager } from './SecretsManager';
 import { ReasoningEffort } from './types';
+import { log } from './Logger';
 import type { OpenRouter } from '@openrouter/sdk';
 import type {
   Model,
@@ -43,13 +44,63 @@ export class OpenRouterClient {
       return this.sdkClient;
     }
 
-    const { OpenRouter } = await import('@openrouter/sdk');
+    const { OpenRouter, HTTPClient } = await import('@openrouter/sdk');
+    const httpClient = new HTTPClient();
+    httpClient.addHook('beforeRequest', async (req) => {
+      if (!/\/chat\/completions(\?|$)/.test(req.url)) {
+        return req;
+      }
+      try {
+        const bodyText = await req.clone().text();
+        if (!bodyText) {
+          return req;
+        }
+        const body = JSON.parse(bodyText) as { messages?: Array<Record<string, unknown>> };
+        let patched = 0;
+        if (Array.isArray(body.messages)) {
+          for (const msg of body.messages) {
+            if (
+              msg.role === 'assistant' &&
+              typeof msg.reasoning === 'string' &&
+              msg.reasoning.length > 0 &&
+              typeof msg.reasoning_content !== 'string'
+            ) {
+              msg.reasoning_content = msg.reasoning;
+              patched++;
+            }
+          }
+        }
+        if (patched === 0) {
+          return req;
+        }
+        log.debug(`beforeRequest: patched reasoning_content on ${patched} assistant message(s)`);
+        return new Request(req.url, {
+          method: req.method,
+          headers: req.headers,
+          body: JSON.stringify(body),
+          redirect: req.redirect,
+          referrer: req.referrer,
+          referrerPolicy: req.referrerPolicy,
+          mode: req.mode,
+          credentials: req.credentials,
+          cache: req.cache,
+          integrity: req.integrity,
+          keepalive: req.keepalive,
+          signal: req.signal,
+        });
+      } catch (err) {
+        log.warn('beforeRequest hook failed; sending original request:', err);
+        return req;
+      }
+    });
+
     this.sdkClient = new OpenRouter({
       apiKey,
       httpReferer: HTTP_REFERER,
       appTitle: APP_TITLE,
       appCategories: APP_CATEGORIES,
       serverURL: this.baseUrl,
+      httpClient,
     });
     this.cachedApiKey = apiKey;
     this.cachedBaseUrl = this.baseUrl;

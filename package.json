@@ -27,6 +27,11 @@
         "category": "ORCP",
         "command": "orcp.showSessionDetails",
         "title": "Show Session Details"
+      },
+      {
+        "category": "ORCP",
+        "command": "orcp.reloadExtension",
+        "title": "Reload Extension"
       }
     ],
     "configuration": {
@@ -136,5 +141,5 @@
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json"
   },
-  "version": "0.1.0-local.7"
+  "version": "0.1.0-local.11"
 }

@@ -43,13 +43,13 @@ This fork is installed locally via VSIX so VSCode's marketplace can't auto-updat
 
 ```bash
 npm install
-npm run local-build      # bundles + packages → openrouter-chat-provider-0.1.0-local.7.vsix
+npm run local-build      # bundles + packages → openrouter-chat-provider-0.1.0-local.11.vsix
 ```
 
 ### Install
 
 ```bash
-code --install-extension openrouter-chat-provider-0.1.0-local.7.vsix
+code --install-extension openrouter-chat-provider-0.1.0-local.11.vsix
 ```
 
 ### Disable auto-update (important)
@@ -66,7 +66,7 @@ the publisher to break that match, but belt-and-braces:
 
 ```bash
 code --list-extensions --show-versions
-# Should show: shreejalmaharjan-27.openrouter-chat-provider@0.1.0-local.7
+# Should show: shreejalmaharjan-27.openrouter-chat-provider@0.1.0-local.11
 ```
 
 ### Upgrade later

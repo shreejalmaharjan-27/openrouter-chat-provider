@@ -8,7 +8,8 @@ let current: RegistrationResult | undefined;
 let inFlightToken = 0;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  log.info('Activating ORCP extension');
+  const version = (context.extension.packageJSON as { version?: string }).version ?? 'unknown';
+  log.info(`Activating ORCP extension v${version} (id=${context.extension.id})`);
   const secrets = new SecretsManager(context);
 
   context.subscriptions.push(
@@ -19,6 +20,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('orcp.clearApiKey', async () => {
       await secrets.deleteApiKey();
       vscode.window.showInformationMessage('OpenRouter: API key removed.');
+    }),
+
+    vscode.commands.registerCommand('orcp.reloadExtension', async () => {
+      await vscode.commands.executeCommand('workbench.action.restartExtensionHost');
     }),
 
     vscode.commands.registerCommand('orcp.showSessionDetails', async () => {

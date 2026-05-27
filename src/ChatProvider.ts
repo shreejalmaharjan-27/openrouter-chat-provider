@@ -77,6 +77,17 @@ export class ChatProvider implements vscode.LanguageModelChatProvider<ModelEntry
 
     log.info(`chat request: model=${model.orModelId} effort=${effort ?? 'none'} msgs=${orMessages.length} tools=${orTools?.length ?? 0} cacheControl=${model.cacheControl}`);
 
+    for (let i = 0; i < orMessages.length; i++) {
+      const m = orMessages[i] as { role: string; reasoning?: unknown; reasoningDetails?: unknown };
+      if (m.reasoningDetails) {
+        log.debug(`msg[${i}] (${m.role}) reasoningDetails:`, m.reasoningDetails);
+      }
+      if (m.reasoning) {
+        const reasoningStr = String(m.reasoning);
+        log.debug(`msg[${i}] (${m.role}) reasoning chars=${reasoningStr.length} preview:`, reasoningStr.slice(0, 120));
+      }
+    }
+
     const abort = new AbortController();
     token.onCancellationRequested(() => abort.abort());
 

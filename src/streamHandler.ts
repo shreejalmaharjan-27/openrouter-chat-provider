@@ -1,4 +1,5 @@
 import vscode from 'vscode';
+import { log } from './Logger';
 import { TurnRecord } from './types';
 import type {
   ChatStreamChunk,
@@ -25,7 +26,28 @@ export async function handleStream(
   let costUSD: number | undefined;
 
   const toolCallBuffers = new Map<number, ToolCallBuffer>();
-  const accumulatedReasoningDetails: unknown[] = [];
+  const reasoningByIndex = new Map<number, Record<string, unknown>>();
+
+  function mergeDetail(target: Record<string, unknown>, source: Record<string, unknown>): void {
+    for (const key of ['text', 'summary', 'data']) {
+      const sv = source[key];
+      if (typeof sv === 'string') {
+        const tv = target[key];
+        target[key] = (typeof tv === 'string' ? tv : '') + sv;
+      }
+    }
+    for (const key of ['signature', 'format', 'id', 'type']) {
+      if (source[key] !== undefined && source[key] !== null) {
+        target[key] = source[key];
+      }
+    }
+  }
+
+  function snapshotDetails(): unknown[] {
+    return [...reasoningByIndex.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, v]) => v);
+  }
 
   for await (const chunk of stream) {
     if (token.isCancellationRequested) {
@@ -52,17 +74,27 @@ export async function handleStream(
     }
 
     const deltaDetails = (delta as { reasoningDetails?: unknown[] }).reasoningDetails;
-    if (Array.isArray(deltaDetails) && deltaDetails.length > 0) {
-      accumulatedReasoningDetails.push(...deltaDetails);
+    const hasNewDetails = Array.isArray(deltaDetails) && deltaDetails.length > 0;
+    if (hasNewDetails) {
+      for (const d of deltaDetails as unknown[]) {
+        const detail = d as Record<string, unknown>;
+        const idx = typeof detail.index === 'number' ? detail.index : 0;
+        const existing = reasoningByIndex.get(idx);
+        if (existing) {
+          mergeDetail(existing, detail);
+        } else {
+          reasoningByIndex.set(idx, { ...detail });
+        }
+      }
     }
 
-    if (delta.reasoning || (Array.isArray(deltaDetails) && deltaDetails.length > 0)) {
+    if (delta.reasoning || hasNewDetails) {
       const hasThinkingPart = 'LanguageModelThinkingPart' in vscode;
       if (hasThinkingPart) {
         const thinkingPart = new vscode.LanguageModelThinkingPart(
           delta.reasoning ?? '',
           undefined,
-          { reasoningDetails: [...accumulatedReasoningDetails] },
+          { reasoningDetails: snapshotDetails() },
         );
         progress.report(thinkingPart as vscode.LanguageModelResponsePart);
       }
@@ -125,6 +157,9 @@ export async function handleStream(
     const toolCallPart = new vscode.LanguageModelToolCallPart(buffer.id, buffer.name, parsedArgs);
     progress.report(toolCallPart);
   }
+
+  const finalDetails = snapshotDetails();
+  log.info(`stream complete: gen=${generationId} model=${orModelId} prompt=${promptTokens} completion=${completionTokens} reasoning=${reasoningTokens} mergedReasoningDetails=${finalDetails.length}`);
 
   return {
     generationId,
