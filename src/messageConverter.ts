@@ -3,6 +3,7 @@ import vscode from 'vscode';
 import { log } from './Logger';
 import type {
   ChatAssistantMessage,
+  ChatContentImage,
   ChatContentItems,
   ChatFunctionTool,
   ChatMessages,
@@ -73,10 +74,11 @@ export function convertMessages(
       if (opts.supportsImageInput && isDataPart(part)) {
         const dataPart = part as { mimeType: string; data: Uint8Array };
         const base64 = Buffer.from(dataPart.data).toString('base64');
-        content.push({
+        const imagePart: ChatContentImage = {
           type: 'image_url',
-          image_url: { url: `data:${dataPart.mimeType};base64,${base64}` },
-        } as unknown as ChatContentItems);
+          imageUrl: { url: `data:${dataPart.mimeType};base64,${base64}` },
+        };
+        content.push(imagePart);
         continue;
       }
 

@@ -55,7 +55,21 @@ export class OpenRouterClient {
         if (!bodyText) {
           return req;
         }
-        const body = JSON.parse(bodyText) as { messages?: Array<Record<string, unknown>> };
+        const body = JSON.parse(bodyText) as {
+          messages?: Array<Record<string, unknown>>;
+          reasoning?: Record<string, unknown>;
+        };
+
+        // The SDK's outbound schema drops `enabled`, so explicitly turn reasoning
+        // on here (matching OpenRouter's expected `{ enabled: true, effort }` shape)
+        // whenever an effort is set.
+        let reasoningEnabled = false;
+        if (body.reasoning && typeof body.reasoning === 'object' && body.reasoning.effort) {
+          body.reasoning.enabled = true;
+          reasoningEnabled = true;
+        }
+        log.info(`beforeRequest: reasoning=${body.reasoning ? JSON.stringify(body.reasoning) : 'none'}`);
+
         let patched = 0;
         if (Array.isArray(body.messages)) {
           for (const msg of body.messages) {
@@ -70,10 +84,12 @@ export class OpenRouterClient {
             }
           }
         }
-        if (patched === 0) {
+        if (patched === 0 && !reasoningEnabled) {
           return req;
         }
-        log.debug(`beforeRequest: patched reasoning_content on ${patched} assistant message(s)`);
+        if (patched > 0) {
+          log.debug(`beforeRequest: patched reasoning_content on ${patched} assistant message(s)`);
+        }
         return new Request(req.url, {
           method: req.method,
           headers: req.headers,

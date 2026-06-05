@@ -60,7 +60,13 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["minimal", "low", "medium", "high", "xhigh"]
+            "enum": [
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh"
+            ]
           }
         },
         "orcp.providerRouting": {
@@ -146,5 +152,5 @@
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json"
   },
-  "version": "0.1.0-local.13"
+  "version": "0.1.0-local.16"
 }
