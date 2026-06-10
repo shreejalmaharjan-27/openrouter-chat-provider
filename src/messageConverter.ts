@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer';
 import vscode from 'vscode';
 import { log } from './Logger';
-import { stripRiskNotes } from './commandSafety';
+import { stripRiskNotes, fileMatchesSecret, commandReferencesSecret } from './commandSafety';
 import type {
   ChatAssistantMessage,
   ChatContentImage,
@@ -16,6 +16,53 @@ import type {
 export interface ConvertOptions {
   useCacheControl: boolean;
   supportsImageInput: boolean;
+  redactSecrets?: boolean;
+  secretPatterns?: string[];
+  // Tool-call ids whose results must be redacted, computed by the caller with
+  // filesystem/script access (symlink + executed-script awareness).
+  secretCallIds?: ReadonlySet<string>;
+}
+
+const SECRET_REDACTION = '[Contents withheld by OpenRouter Chat Provider: this file matches your secret-file policy and was not sent to the model.]';
+
+function pickString(obj: Record<string, unknown> | undefined, keys: string[]): string | undefined {
+  if (!obj) {
+    return undefined;
+  }
+  for (const k of keys) {
+    const v = obj[k];
+    if (typeof v === 'string' && v.length > 0) {
+      return v;
+    }
+  }
+  return undefined;
+}
+
+// Find tool-call ids whose result would leak a secret file: a read/file tool with
+// a sensitive path, or a terminal command that reads a sensitive file. Their tool
+// results are redacted before we send the conversation upstream.
+function collectSecretCallIds(
+  messages: readonly vscode.LanguageModelChatRequestMessage[],
+  patterns: string[],
+): Set<string> {
+  const ids = new Set<string>();
+  for (const msg of messages) {
+    if (!Array.isArray(msg.content)) {
+      continue;
+    }
+    for (const part of msg.content) {
+      if (!(part instanceof vscode.LanguageModelToolCallPart) || !part.callId) {
+        continue;
+      }
+      const input = part.input as Record<string, unknown> | undefined;
+      const path = pickString(input, ['filePath', 'path', 'file', 'uri', 'fileName', 'absolutePath', 'targetFile']);
+      const command = pickString(input, ['command', 'commandLine', 'cmd']);
+      if ((path && fileMatchesSecret(path, patterns)) || (command && commandReferencesSecret(command, patterns))) {
+        ids.add(part.callId);
+      }
+    }
+  }
+  return ids;
 }
 
 function isKnownInputPart(part: unknown): part is vscode.LanguageModelInputPart {
@@ -55,6 +102,13 @@ export function convertMessages(
   opts: ConvertOptions = { useCacheControl: false, supportsImageInput: false },
 ): ChatMessages[] {
   const result: ChatMessages[] = [];
+
+  const secretCallIds = opts.redactSecrets
+    ? new Set<string>([
+        ...collectSecretCallIds(messages, opts.secretPatterns ?? []),
+        ...(opts.secretCallIds ?? []),
+      ])
+    : new Set<string>();
 
   for (const msg of messages) {
     const role = msg.role === vscode.LanguageModelChatMessageRole.User ? 'user' : 'assistant';
@@ -131,9 +185,13 @@ export function convertMessages(
     }
 
     if (toolResultContent !== undefined && toolResultCallId !== undefined) {
+      const redacted = secretCallIds.has(toolResultCallId);
+      if (redacted) {
+        log.warn(`redacted secret-file tool result from upstream request (callId=${toolResultCallId})`);
+      }
       const toolMessage: ChatToolMessage = {
         role: 'tool',
-        content: toolResultContent,
+        content: redacted ? SECRET_REDACTION : toolResultContent,
         toolCallId: toolResultCallId,
       };
       result.push(toolMessage);

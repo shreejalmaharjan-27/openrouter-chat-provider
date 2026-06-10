@@ -251,6 +251,25 @@ Order of evaluation: **block list → allow list → model (if on) → local rul
 
 **Script inspection.** When a command runs or sources a local file (e.g. `python parse.py`, `bash deploy.sh`, `./run.sh`, `source x.sh`), the actual file contents are read — both files the agent just wrote and files already on disk — and folded into the verdict. This catches harmful or obfuscated payloads hidden inside a script that the innocent-looking command line wouldn't reveal (base64-decode-and-exec, `eval`/`exec` of encoded data, destructive commands in the file body).
 
+**Evasion handling.** Rules run against de-obfuscated and decoded forms of the command, not just the raw text: token-splitting tricks (`--priv""ileged`, `d\ocker`, `/''etc`), `sh -c "…"` / `eval` / `$(…)` wrapping, and base64 payloads are unwrapped/decoded before matching (and decoded payloads are shown to the model too). Container escapes are caught deterministically: `--privileged`, `--cap-add`, `--security-opt …=unconfined`, host namespaces, the Docker socket, and **any sensitive host bind-mount** (`-v /etc`, `/home`, `/root`, `/`, …) — since a container runs as root, any host mount exposes host files — plus `nsenter`/`unshare` and reads of `/etc/shadow`, SSH keys, or `/proc/<pid>/root`.
+
+### Secret protection (`orcp.commandSafety.redactSecretFiles`)
+
+Separately from the advisory verdict, the extension **withholds the contents of sensitive files from the model** so they never leave your device. When the agent reads a secret file — via a file-read tool or a terminal command — the file's contents are replaced with a placeholder in the request before it is sent to OpenRouter.
+
+```json
+{
+  "orcp.commandSafety.redactSecretFiles": true,
+  "orcp.commandSafety.secretFilePatterns": ["*.token", "config/secrets.yml"]
+}
+```
+
+- Built-in defaults cover `.env`/`.env.*`, `*.pem`/`*.key`/`*.pfx`/`*.p12`, `id_rsa`/`id_ed25519`/…, `.npmrc`/`.netrc`/`.git-credentials`, `**/.ssh/*`, `**/.aws/credentials`, `**/.gnupg/*`, and more. `.example`/`.sample`/`.template` files are never treated as secrets.
+- `secretFilePatterns` adds your own globs on top of the defaults.
+- Detection reuses the same de-obfuscation/decoding as above, so `cat .e""nv`, a base64-encoded path, or a runtime-built path (`chr(46)+chr(101)+…`, octal `\056\145…`, hex `\x2e`, `String.fromCharCode(...)`) is reconstructed and matched — against **all** patterns, including your custom ones. Symlinks to secret files are resolved too.
+- `orcp.commandSafety.redactObfuscatedReads` (default off, aggressive): when on, the output of any command/script that is obfuscated enough that its target can't be statically resolved is withheld and flagged 🔴 — even when no secret file can be named. Closes the residual "runtime-built path we can't reconstruct" gap, at the cost of redacting some legitimate obfuscated commands.
+- Scope/limit: this redacts what **this extension** sends to OpenRouter. It cannot redact data sent by VS Code itself or other extensions, and it correlates a tool result to its originating read; secrets pasted directly into chat or attached as context aren't covered.
+
 All of these are editable from the **settings page** (`ORCP: Open Settings`) without touching JSON.
 
 ## Settings page

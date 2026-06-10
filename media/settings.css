@@ -38,6 +38,12 @@ section > h2 {
   margin: 0 0 4px;
 }
 
+section > h2.subhead {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+}
+
 .section-hint {
   color: var(--vscode-descriptionForeground);
   font-size: 0.9em;

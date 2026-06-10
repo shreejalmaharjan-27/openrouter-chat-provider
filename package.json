@@ -164,6 +164,27 @@
           "default": false,
           "description": "Additionally show a blocking warning dialog for 🔴 unsafe commands. Still advisory — it does not cancel the command.",
           "type": "boolean"
+        },
+        "orcp.commandSafety.redactSecretFiles": {
+          "title": "Command Safety: Redact Secret Files",
+          "default": true,
+          "description": "Withhold the contents of sensitive files (.env, private keys, credentials, etc.) from the model — when the agent reads such a file, its contents are replaced with a placeholder before the request is sent to OpenRouter, so the secret never leaves your device. Covers file-read tools and terminal commands (incl. obfuscated/encoded ones).",
+          "type": "boolean"
+        },
+        "orcp.commandSafety.secretFilePatterns": {
+          "title": "Command Safety: Extra Secret File Patterns",
+          "default": [],
+          "description": "Additional file globs treated as secrets (in addition to the built-in defaults like .env, *.pem, id_rsa, .aws/credentials). Examples: [\"*.token\", \"config/secrets.yml\", \"**/private/*\"]. Matched on the basename or full path; .example/.sample/.template files are never treated as secrets.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "orcp.commandSafety.redactObfuscatedReads": {
+          "title": "Command Safety: Redact Obfuscated Command Output",
+          "default": false,
+          "description": "Aggressive opt-in: when a command (or a script it runs) is obfuscated/encoded (base64, eval, chr()/fromCharCode, octal/hex escapes) such that its target can't be statically resolved, withhold its output from the model and flag it 🔴 — even if no secret file can be named. Prevents leaks via runtime-built paths at the cost of redacting some legitimate obfuscated commands.",
+          "type": "boolean"
         }
       },
       "title": "OpenRouter Chat Provider"
@@ -217,5 +238,5 @@
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json"
   },
-  "version": "0.1.0-local.23"
+  "version": "0.1.0-local.28"
 }

@@ -103,6 +103,130 @@ export function extractScriptRefs(command: string): { dirs: string[]; files: str
   return { dirs: [...new Set(dirs)], files: [...new Set(files)] };
 }
 
+// Files whose contents must never be sent to the model. Users can extend this.
+export const DEFAULT_SECRET_PATTERNS = [
+  '.env', '.env.*',
+  '*.pem', '*.key', '*.pfx', '*.p12', '*.keystore', '*.jks', '*.ppk', '*.kdbx',
+  'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519',
+  '.npmrc', '.pypirc', '.netrc', '.git-credentials', '.htpasswd', '.dockercfg',
+  '.ssh/*', '.aws/credentials', '.gnupg/*', '.config/gcloud/*',
+  'service-account*.json', 'credentials.json',
+  'secrets.json', 'secrets.yml', 'secrets.yaml', 'secrets.env', 'secrets.txt',
+];
+
+function escapeReChar(c: string): string {
+  return c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+}
+
+// Glob → regex source: `**` = any, `*` = any non-slash, `?` = one non-slash.
+function globToRe(glob: string): string {
+  let r = '';
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === '*') {
+      if (glob[i + 1] === '*') {
+        r += '.*';
+        i++;
+      } else {
+        r += '[^/]*';
+      }
+    } else if (c === '?') {
+      r += '[^/]';
+    } else {
+      r += escapeReChar(c);
+    }
+  }
+  return r;
+}
+
+// True if a file path matches one of the secret patterns. Skips .example/.sample
+// style template files which carry no real secrets.
+export function fileMatchesSecret(pathStr: string, patterns: readonly string[]): boolean {
+  const norm = pathStr.replace(/\\/g, '/');
+  const base = norm.split('/').pop() ?? norm;
+  if (/\.(example|sample|template|dist|md)$/i.test(base)) {
+    return false;
+  }
+  return patterns.some((p) => {
+    const re = new RegExp('(^|/)' + globToRe(p.replace(/\\/g, '/')) + '$', 'i');
+    return re.test(norm) || re.test(base);
+  });
+}
+
+// True if a command references a secret file — using the same de-obfuscation /
+// decoding expansion as the safety rules, so `cat .e""nv` / base64'd paths count.
+// Tokenizes each expanded form and runs fileMatchesSecret (so .example/.sample
+// templates are correctly excluded).
+export function commandReferencesSecret(command: string, patterns: readonly string[]): boolean {
+  for (const target of scanTargets(command)) {
+    for (const raw of target.split(/[\s'"`|&;:=()<>@,]+/)) {
+      const tok = raw.trim();
+      if (tok.length > 0 && fileMatchesSecret(tok, patterns)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Sending data off the machine: network clients + language HTTP/socket APIs.
+const NETWORK_EGRESS_RE = /\b(curl|wget|nc|ncat|netcat|telnet|ftp|tftp|scp|sftp|rsync|ssh)\b|\/dev\/(tcp|udp)\//i;
+const CODE_EGRESS_RE = /\brequests\.(get|post|put|patch|delete|request)\b|\b(urllib|urlopen|http\.client|httpx|aiohttp)\b|\bsocket\.(socket|create_connection)\b|\bfetch\s*\(|\baxios\b|\bXMLHttpRequest\b|\bnet\.(connect|createConnection)\b|\bhttps?\.request\b|\bInvoke-WebRequest\b|\bInvoke-RestMethod\b/i;
+// Reading secrets from the environment (specific secret-ish names, or full dumps).
+const ENV_SECRET_RE = /\bprocess\.env\b|\bos\.environ\b|\b(os\.getenv|getenv)\s*\(|\bprintenv\b|\benv\b\s*(\||>|$)|\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CRED|APIKEY|API_KEY)\w*\}?/i;
+
+function hasNetworkEgress(text: string): boolean {
+  return NETWORK_EGRESS_RE.test(text) || CODE_EGRESS_RE.test(text);
+}
+
+// Detect likely secret exfiltration: data leaving the machine that also touches a
+// secret file or secret environment variables. Works on a command line OR a
+// script body. Returns red when both signals are present.
+export function assessExfiltration(text: string, patterns: readonly string[]): Verdict | undefined {
+  if (!hasNetworkEgress(text)) {
+    return undefined;
+  }
+  if (commandReferencesSecret(text, patterns)) {
+    return { risk: 'red', reason: 'Sends a secret file to a remote endpoint — possible exfiltration.' };
+  }
+  if (ENV_SECRET_RE.test(text)) {
+    return { risk: 'red', reason: 'Sends secret environment variables to a remote endpoint — possible exfiltration.' };
+  }
+  return undefined;
+}
+
+// True if a command/script body uses encoding/indirection that hides its real
+// behavior (base64, eval/exec, chr()/fromCharCode, octal/hex/unicode escapes).
+export function isObfuscatedCommand(s: string): boolean {
+  return OBFUSCATION_RE.test(s) || reconstructEncoded(s) !== s || decodeBase64Candidates(s).length > 0;
+}
+
+// Path-like tokens from a command (de-obfuscated/decoded), for symlink resolution.
+export function extractPathTokens(command: string): string[] {
+  const toks = new Set<string>();
+  for (const target of scanTargets(command)) {
+    for (const raw of target.split(/[\s'"`|&;()<>@,]+/)) {
+      const t = raw.trim().replace(/^[A-Za-z0-9_]+=/, ''); // drop VAR= prefix
+      if (t && (t.includes('/') || /^[.~]/.test(t) || /\.[A-Za-z0-9]{1,8}$/.test(t))) {
+        toks.add(t);
+      }
+    }
+  }
+  return [...toks];
+}
+
+// True if a script/command body reads a secret file or exfiltrates secrets.
+export function bodyTouchesSecret(text: string, patterns: readonly string[]): Verdict | undefined {
+  const exfil = assessExfiltration(text, patterns);
+  if (exfil) {
+    return exfil;
+  }
+  if (commandReferencesSecret(text, patterns)) {
+    return { risk: 'red', reason: 'Reads a secret file (.env / key / credentials) — contents withheld from the model.' };
+  }
+  return undefined;
+}
+
 // True if the command (or any of its sub-commands) begins with one of the given
 // prefixes, matched on a word boundary so "git" won't match "github-cli".
 export function listMatch(command: string, prefixes: readonly string[]): boolean {
@@ -152,12 +276,34 @@ function firstPathArg(sub: string): string {
 const PIPE_TO_INTERPRETER = /\|\s*(sudo\s+)?(sh|bash|zsh|dash|python3?|node|perl|ruby)\b/i;
 
 // Markers that a command is hiding its real behavior behind encoding/indirection.
-const OBFUSCATION_RE = /\b(base64|base32|xxd|uudecode|openssl\s+enc|atob|btoa)\b|\beval\b|\bexec\s|\\x[0-9a-f]{2}|\\[0-7]{3}|\\u[0-9a-f]{4}/i;
+const OBFUSCATION_RE = /\b(base64|base32|xxd|uudecode|openssl\s+enc|atob|btoa)\b|\beval\b|\bexec\s|\bchr\s*\(|\bfromCharCode\b|\bord\s*\(|\\x[0-9a-f]{2}|\\[0-7]{2,3}|\\u[0-9a-f]{4}/i;
 
 // Undo cheap token-splitting obfuscation: `\o` -> `o`, empty quote pairs removed.
 // So `--priv""ileged` -> `--privileged`, `d\ocker` -> `docker`, `/''etc` -> `/etc`.
 function deobfuscate(s: string): string {
   return s.replace(/\\([A-Za-z0-9$/.])/g, '$1').replace(/''|""/g, '');
+}
+
+function codeToChar(n: number): string {
+  return Number.isFinite(n) && n >= 0 && n < 0x110000 ? String.fromCharCode(n) : '';
+}
+
+// Reconstruct strings built at runtime from character codes / escape sequences:
+// chr(46)+chr(101)…, String.fromCharCode(46,101,…), octal \056, hex \x2e, ..
+// So an `.env` path assembled char-by-char becomes literal and is detectable.
+function reconstructEncoded(s: string): string {
+  let d = s;
+  d = d.replace(/(?:String\.)?fromCharCode\(([^)]*)\)/gi, (_m, args: string) =>
+    args.split(',').map((a) => {
+      const t = a.trim();
+      return codeToChar(t.startsWith('0x') ? parseInt(t, 16) : parseInt(t, 10));
+    }).join(''));
+  d = d.replace(/\bchr\(\s*(0x[0-9a-f]+|\d+)\s*\)/gi, (_m, n: string) =>
+    codeToChar(n.startsWith('0x') ? parseInt(n, 16) : parseInt(n, 10)));
+  d = d.replace(/\\x([0-9a-f]{2})/gi, (_m, h: string) => codeToChar(parseInt(h, 16)));
+  d = d.replace(/\\u\{?([0-9a-f]{1,6})\}?/gi, (_m, h: string) => codeToChar(parseInt(h, 16)));
+  d = d.replace(/\\([0-7]{1,3})/g, (_m, o: string) => codeToChar(parseInt(o, 8)));
+  return d;
 }
 
 // Pull out code hidden inside `sh -c "…"`, `eval "…"`, $( … ), and backticks.
@@ -193,7 +339,7 @@ function isMostlyPrintable(s: string): boolean {
 // real contents. Returns only tokens that decode to plausible text.
 export function decodeBase64Candidates(s: string): string[] {
   const out: string[] = [];
-  for (const m of s.matchAll(/[A-Za-z0-9+/]{16,}={0,2}/g)) {
+  for (const m of s.matchAll(/[A-Za-z0-9+/]{6,}={0,2}/g)) {
     const tok = m[0];
     try {
       const decoded = typeof Buffer !== 'undefined'
@@ -210,7 +356,8 @@ export function decodeBase64Candidates(s: string): string[] {
 }
 
 // All string variants the local rules should scan: the raw line, each
-// sub-command, their de-obfuscated forms, and any unwrapped/decoded payloads.
+// sub-command, their de-obfuscated forms, reconstructed char-code/escape strings,
+// and any unwrapped/decoded payloads.
 function scanTargets(commandLine: string): string[] {
   const set = new Set<string>();
   const add = (s: string): void => {
@@ -223,17 +370,33 @@ function scanTargets(commandLine: string): string[] {
       }
     }
   };
-  add(commandLine);
-  for (const s of splitSubCommands(commandLine)) {
+  const addAll = (s: string): void => {
     add(s);
+    // Reconstruct runtime-built strings (chr()/fromCharCode/\octal/\xNN), plus a
+    // "joined" form with quotes/`+` removed so concatenations merge into a path.
+    const r = reconstructEncoded(s);
+    if (r !== s) {
+      add(r);
+      const joined = r.replace(/['"`]/g, '').replace(/\s*\+\s*/g, '');
+      if (joined !== r) {
+        add(joined);
+        for (const sub of splitSubCommands(joined)) {
+          add(sub);
+        }
+      }
+    }
+  };
+  addAll(commandLine);
+  for (const s of splitSubCommands(commandLine)) {
+    addAll(s);
   }
   for (const payload of [...extractWrappedPayloads(commandLine), ...decodeBase64Candidates(commandLine)]) {
-    add(payload);
+    addAll(payload);
     for (const s of splitSubCommands(payload)) {
-      add(s);
+      addAll(s);
     }
   }
-  return [...set].slice(0, 80);
+  return [...set].slice(0, 160);
 }
 
 const CONTAINER_CLI = /\b(docker|podman|nerdctl)\b/i;
@@ -430,6 +593,12 @@ export function assessLocal(commandLine: string): { verdict: Verdict; certain: b
     return { verdict: { risk: 'green', reason: 'No command to run.' }, certain: true };
   }
 
+  // Secret exfiltration (network egress + secret file/env) is critical.
+  const exfil = assessExfiltration(commandLine, DEFAULT_SECRET_PATTERNS);
+  if (exfil) {
+    return { verdict: exfil, certain: true };
+  }
+
   // Scan the raw line, every sub-command, their de-obfuscated forms, and any
   // unwrapped (sh -c / eval / $() ) or base64-decoded payloads.
   const targets = scanTargets(commandLine);
@@ -444,6 +613,15 @@ export function assessLocal(commandLine: string): { verdict: Verdict; certain: b
     if (orange) {
       return { verdict: orange, certain: true };
     }
+  }
+
+  // Accessing a secret file is critical (its contents are also redacted from what
+  // we send upstream — see the message converter).
+  if (commandReferencesSecret(commandLine, DEFAULT_SECRET_PATTERNS)) {
+    return {
+      verdict: { risk: 'red', reason: 'Accesses a secret file (.env / key / credentials).' },
+      certain: true,
+    };
   }
 
   // Nothing matched, but the command hides its behavior behind encoding/indirection:

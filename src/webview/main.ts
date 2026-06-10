@@ -45,6 +45,9 @@ interface CommandSafety {
   allowList: string[];
   denyList: string[];
   modalOnRed: boolean;
+  redactSecretFiles: boolean;
+  secretFilePatterns: string[];
+  redactObfuscatedReads: boolean;
 }
 interface State {
   apiKeySet: boolean;
@@ -298,6 +301,14 @@ function commandSafetySection(s: State): HTMLElement {
   modalCb.checked = cs.modalOnRed;
   modalCb.addEventListener('change', () => updateConfig('commandSafety.modalOnRed', modalCb.checked));
 
+  const redactCb = h('input', { type: 'checkbox' }) as HTMLInputElement;
+  redactCb.checked = cs.redactSecretFiles;
+  redactCb.addEventListener('change', () => updateConfig('commandSafety.redactSecretFiles', redactCb.checked));
+  const secretTa = textareaList(cs.secretFilePatterns, 'Extra patterns, one per line, e.g.\n*.token\nconfig/secrets.yml', (next) => updateConfig('commandSafety.secretFilePatterns', next));
+  const redactObfCb = h('input', { type: 'checkbox' }) as HTMLInputElement;
+  redactObfCb.checked = cs.redactObfuscatedReads;
+  redactObfCb.addEventListener('change', () => updateConfig('commandSafety.redactObfuscatedReads', redactObfCb.checked));
+
   return h('section', { id: 'safety-section' }, [
     h('h2', {}, ['Command safety']),
     h('p', { class: 'section-hint' }, [
@@ -335,6 +346,17 @@ function commandSafetySection(s: State): HTMLElement {
       h('div', { class: 'row' }, [loadDefaultBtn]),
     ]),
     h('label', { class: 'checkbox' }, [modalCb, 'Also show a blocking dialog for 🔴 unsafe commands']),
+    h('h2', { class: 'subhead' }, ['Secret protection']),
+    h('p', { class: 'section-hint' }, [
+      'When the agent reads a sensitive file, its contents are replaced with a placeholder before the request is sent to OpenRouter — so secrets never leave your device. Covers file reads and terminal commands, including obfuscated/encoded ones.',
+    ]),
+    h('label', { class: 'checkbox' }, [redactCb, 'Redact secret-file contents from requests (recommended)']),
+    h('div', { class: 'field' }, [
+      h('label', {}, ['Extra secret-file patterns']),
+      h('span', { class: 'hint' }, ['Added to built-in defaults (.env, *.pem, id_rsa, .aws/credentials, …). .example/.sample files are never treated as secrets. Encoded paths (chr()/octal/hex/base64) are reconstructed and matched too.']),
+      secretTa,
+    ]),
+    h('label', { class: 'checkbox' }, [redactObfCb, 'Also redact output of obfuscated commands whose target can’t be verified (aggressive)']),
   ]);
 }
 

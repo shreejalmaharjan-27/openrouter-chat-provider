@@ -3,11 +3,11 @@ import { ModelRegistry } from './ModelRegistry';
 import { OpenRouterClient } from './OpenRouterClient';
 import { SessionTracker } from './SessionTracker';
 import { convertMessages, convertTools } from './messageConverter';
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync, statSync, realpathSync } from 'node:fs';
 import { isAbsolute, join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { handleStream, SafetyOptions } from './streamHandler';
-import { assessLocal, listMatch, extractScriptRefs, decodeBase64Candidates, DEFAULT_SAFETY_PROMPT, RISK_RANK, Risk, Verdict } from './commandSafety';
+import { assessLocal, listMatch, commandReferencesSecret, fileMatchesSecret, extractPathTokens, assessExfiltration, bodyTouchesSecret, isObfuscatedCommand, extractScriptRefs, decodeBase64Candidates, DEFAULT_SAFETY_PROMPT, DEFAULT_SECRET_PATTERNS, RISK_RANK, Risk, Verdict } from './commandSafety';
 import { log } from './Logger';
 import { ModelEntry } from './types';
 import type { ChatStreamChunk, ChatToolChoice, ChatMessages } from '@openrouter/sdk/models';
@@ -25,6 +25,9 @@ interface CommandSafetyConfig {
   prompt: string;
   allowList: string[];
   denyList: string[];
+  redactSecrets: boolean;
+  redactObfuscatedReads: boolean;
+  secretPatterns: string[];
 }
 
 function describeApiError(err: unknown): { msg: string; isAuth: boolean; isPayment: boolean; isRate: boolean } {
@@ -48,6 +51,19 @@ function mapToolChoice(toolMode: vscode.LanguageModelChatToolMode | undefined): 
   return toolMode === vscode.LanguageModelChatToolMode.Required
     ? ChatToolChoiceRequired.Required
     : ChatToolChoiceAuto.Auto;
+}
+
+function pickArg(obj: Record<string, unknown> | undefined, keys: string[]): string | undefined {
+  if (!obj) {
+    return undefined;
+  }
+  for (const k of keys) {
+    const v = obj[k];
+    if (typeof v === 'string' && v.length > 0) {
+      return v;
+    }
+  }
+  return undefined;
 }
 
 function normalizeRisk(value: unknown): Risk | undefined {
@@ -96,9 +112,20 @@ export class ChatProvider implements vscode.LanguageModelChatProvider<ModelEntry
     const effort = model.effort;
     const toolChoice = mapToolChoice(options.toolMode);
 
+    const cfg = vscode.workspace.getConfiguration('orcp');
+    const redactSecrets = cfg.get<boolean>('commandSafety.redactSecretFiles', true);
+    const redactObfuscated = cfg.get<boolean>('commandSafety.redactObfuscatedReads', false);
+    const secretPatterns = redactSecrets
+      ? [...DEFAULT_SECRET_PATTERNS, ...(cfg.get<string[]>('commandSafety.secretFilePatterns', []) ?? [])]
+      : [];
+    const anyRedaction = redactSecrets || redactObfuscated;
+
     const orMessages = convertMessages(messages, {
       useCacheControl: model.cacheControl,
       supportsImageInput: model.capabilities.imageInput === true,
+      redactSecrets: anyRedaction,
+      secretPatterns,
+      secretCallIds: anyRedaction ? this.computeSecretToolCallIds(messages, secretPatterns, redactObfuscated) : undefined,
     });
     const orTools = options.tools && options.tools.length > 0
       ? convertTools(options.tools)
@@ -159,6 +186,9 @@ export class ChatProvider implements vscode.LanguageModelChatProvider<ModelEntry
       prompt: (cfg.get<string>('commandSafety.prompt', '') ?? '').trim() || DEFAULT_SAFETY_PROMPT,
       allowList: cfg.get<string[]>('commandSafety.allowList', []) ?? [],
       denyList: cfg.get<string[]>('commandSafety.denyList', []) ?? [],
+      redactSecrets: cfg.get<boolean>('commandSafety.redactSecretFiles', true),
+      redactObfuscatedReads: cfg.get<boolean>('commandSafety.redactObfuscatedReads', false),
+      secretPatterns: [...DEFAULT_SECRET_PATTERNS, ...(cfg.get<string[]>('commandSafety.secretFilePatterns', []) ?? [])],
     };
 
     return {
@@ -177,9 +207,35 @@ export class ChatProvider implements vscode.LanguageModelChatProvider<ModelEntry
       return { risk: 'green', reason: 'Matches your command allowlist.' };
     }
 
+    // Accessing a secret file is always critical — decided deterministically so the
+    // model can never downgrade it (covers custom patterns and symlinks to secrets).
+    if (commandReferencesSecret(command, safety.secretPatterns) || this.resolvesToSecret(command, safety.secretPatterns)) {
+      const note = safety.redactSecrets ? ' — its contents are withheld from the model' : '';
+      return { risk: 'red', reason: `Accesses a secret file (.env / key / credentials)${note}.` };
+    }
+
+    // Secret exfiltration in the command itself (network egress + secret/env).
+    const cmdExfil = assessExfiltration(command, safety.secretPatterns);
+    if (cmdExfil) {
+      return cmdExfil;
+    }
+
     // If the command runs a script/file, read it so its actual behavior (incl.
-    // obfuscated payloads) is judged — not just the innocent-looking command line.
+    // obfuscated payloads, secret reads, and exfiltration) is judged — not just
+    // the innocent-looking command line.
     const scriptContext = this.gatherScriptContext(command, writtenFiles);
+    if (scriptContext) {
+      const scriptVerdict = bodyTouchesSecret(scriptContext, safety.secretPatterns);
+      if (scriptVerdict) {
+        return scriptVerdict;
+      }
+    }
+
+    // Opt-in: a command/script obfuscated enough that we can't resolve what it
+    // touches is treated as critical and its output is withheld upstream.
+    if (safety.redactObfuscatedReads && (isObfuscatedCommand(command) || (scriptContext !== undefined && isObfuscatedCommand(scriptContext)))) {
+      return { risk: 'red', reason: 'Obfuscated/encoded command — its target can’t be verified, so its output is withheld from the model.' };
+    }
 
     // By default every command is evaluated by the model; local rules are the
     // fallback when AI is off, no model is set, or the call fails/times out.
@@ -238,6 +294,68 @@ export class ChatProvider implements vscode.LanguageModelChatProvider<ModelEntry
     }
     log.info(`command-safety: script refs ${JSON.stringify(files)} → ${readLog.join(', ') || 'none'}`);
     return chunks.length > 0 ? chunks.join('\n\n') : undefined;
+  }
+
+  // Tool-call ids whose RESULT must be redacted: file reads of a secret path
+  // (incl. symlinks), terminal commands that reference a secret, and terminal
+  // commands that run a script which reads a secret (so printed secrets are
+  // withheld too). ChatProvider does this — it has filesystem + script access.
+  private computeSecretToolCallIds(messages: readonly vscode.LanguageModelChatRequestMessage[], patterns: string[], redactObfuscated: boolean): Set<string> {
+    const ids = new Set<string>();
+    for (const msg of messages) {
+      if (!Array.isArray(msg.content)) {
+        continue;
+      }
+      for (const part of msg.content) {
+        if (!(part instanceof vscode.LanguageModelToolCallPart) || !part.callId) {
+          continue;
+        }
+        const input = part.input as Record<string, unknown> | undefined;
+        const path = pickArg(input, ['filePath', 'path', 'file', 'uri', 'fileName', 'absolutePath', 'targetFile']);
+        const cmd = pickArg(input, ['command', 'commandLine', 'cmd']);
+        let taint = false;
+        if (path && patterns.length > 0 && (fileMatchesSecret(path, patterns) || this.resolvesToSecret(path, patterns))) {
+          taint = true;
+        }
+        if (!taint && cmd) {
+          if (patterns.length > 0 && (commandReferencesSecret(cmd, patterns) || this.resolvesToSecret(cmd, patterns))) {
+            taint = true;
+          } else {
+            const sc = this.gatherScriptContext(cmd, new Map());
+            if (sc && patterns.length > 0 && commandReferencesSecret(sc, patterns)) {
+              taint = true;
+            } else if (redactObfuscated && (isObfuscatedCommand(cmd) || (sc !== undefined && isObfuscatedCommand(sc)))) {
+              taint = true;
+            }
+          }
+        }
+        if (taint) {
+          ids.add(part.callId);
+        }
+      }
+    }
+    return ids;
+  }
+
+  // Resolve path tokens (incl. symlinks) and check whether any points at a secret
+  // file. Closes the `ln -s ~/.env /tmp/x && cat /tmp/x` evasion.
+  private resolvesToSecret(command: string, patterns: string[]): boolean {
+    const roots = (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
+    for (const token of extractPathTokens(command)) {
+      const expanded = token.startsWith('~/') ? join(homedir(), token.slice(2)) : token;
+      const candidates = isAbsolute(expanded) ? [expanded] : [expanded, ...roots.map((r) => join(r, expanded))];
+      for (const candidate of candidates) {
+        try {
+          const real = realpathSync(candidate);
+          if (fileMatchesSecret(real, patterns)) {
+            return true;
+          }
+        } catch {
+          // path doesn't exist / not resolvable — ignore
+        }
+      }
+    }
+    return false;
   }
 
   private readScriptFile(ref: string, baseDirs: string[], writtenFiles: Map<string, string>): { content: string; source: string } | undefined {
