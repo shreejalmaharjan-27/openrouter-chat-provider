@@ -16,6 +16,12 @@ export interface ModelConfig {
   cacheControl?: boolean;
 }
 
+export interface ConfigurableModel {
+  id: string;
+  name: string;
+  supportsReasoning: boolean;
+}
+
 export interface TurnRecord {
   generationId: string;
   orModelId: string;

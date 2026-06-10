@@ -1,6 +1,7 @@
 import { Buffer } from 'node:buffer';
 import vscode from 'vscode';
 import { log } from './Logger';
+import { stripRiskNotes } from './commandSafety';
 import type {
   ChatAssistantMessage,
   ChatContentImage,
@@ -87,7 +88,11 @@ export function convertMessages(
       }
 
       if (part instanceof vscode.LanguageModelTextPart) {
-        content.push({ type: 'text', text: part.value });
+        // Strip our own injected safety notes so they don't pollute upstream context.
+        const text = role === 'assistant' ? stripRiskNotes(part.value) : part.value;
+        if (text.length > 0) {
+          content.push({ type: 'text', text });
+        }
       } else if (part instanceof vscode.LanguageModelThinkingPart) {
         const reasoningValue = typeof part.value === 'string' ? part.value : part.value.join('');
         if (role === 'assistant') {

@@ -37,6 +37,11 @@
         "category": "ORCP",
         "command": "orcp.configureEffort",
         "title": "Configure Reasoning Effort for a Model"
+      },
+      {
+        "category": "ORCP",
+        "command": "orcp.openSettings",
+        "title": "Open Settings"
       }
     ],
     "configuration": {
@@ -99,6 +104,66 @@
               "type": "boolean"
             }
           }
+        },
+        "orcp.commandSafety.enabled": {
+          "title": "Command Safety: Enabled",
+          "default": true,
+          "description": "Show an inline 🟢/🟠/🔴 safety verdict above every terminal command the agent proposes. Advisory only — you still approve via the normal confirmation card.",
+          "type": "boolean"
+        },
+        "orcp.commandSafety.minLevelToShow": {
+          "title": "Command Safety: Minimum Level To Show",
+          "default": "green",
+          "description": "Only annotate commands at or above this severity. 'green' annotates everything (incl. read-only); 'orange' shows only caution/unsafe; 'red' shows only unsafe.",
+          "type": "string",
+          "enum": [
+            "green",
+            "orange",
+            "red"
+          ]
+        },
+        "orcp.commandSafety.aiEvaluation": {
+          "title": "Command Safety: AI Evaluation",
+          "default": true,
+          "description": "Evaluate every command with the model below for a higher-quality verdict. When off (or no model is set), fast built-in local rules are used instead. Allow/block lists always take precedence and skip the model.",
+          "type": "boolean"
+        },
+        "orcp.commandSafety.model": {
+          "title": "Command Safety: Model",
+          "default": "",
+          "description": "Model (id from this provider) used to evaluate commands when AI evaluation is on. Pick a fast, cheap model — it runs on every terminal command. Reasoning is forced off and the call is time-limited; on timeout/error the local rules are used.",
+          "type": "string"
+        },
+        "orcp.commandSafety.prompt": {
+          "title": "Command Safety: Evaluation Prompt",
+          "default": "",
+          "description": "Instruction sent to the model for command evaluation (the command is appended automatically). Leave empty to use the built-in default. Must instruct the model to reply with STRICT JSON {\"risk\":\"green|orange|red\",\"reason\":\"...\"}.",
+          "type": "string",
+          "editPresentation": "multilineText"
+        },
+        "orcp.commandSafety.allowList": {
+          "title": "Command Safety: Allow List",
+          "default": [],
+          "description": "Command prefixes that are always treated as 🟢 Safe (skips the model). Matched on a word boundary, e.g. \"git status\" or \"npm run\". Example: [\"npm run\", \"git status\", \"ls\"].",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "orcp.commandSafety.denyList": {
+          "title": "Command Safety: Block List",
+          "default": [],
+          "description": "Command prefixes that are always treated as 🔴 Unsafe (skips the model, takes precedence over the allow list). Matched on a word boundary, e.g. \"rm -rf\" or \"git push --force\".",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "orcp.commandSafety.modalOnRed": {
+          "title": "Command Safety: Modal On Unsafe",
+          "default": false,
+          "description": "Additionally show a blocking warning dialog for 🔴 unsafe commands. Still advisory — it does not cancel the command.",
+          "type": "boolean"
         }
       },
       "title": "OpenRouter Chat Provider"
@@ -142,7 +207,7 @@
     "url": "git+https://github.com/shreejalmaharjan-27/openrouter-chat-provider.git"
   },
   "scripts": {
-    "check-types": "tsc --noEmit",
+    "check-types": "tsc --noEmit && tsc --noEmit -p tsconfig.webview.json",
     "compile": "npm run check-types && node esbuild.js",
     "clean": "node -e \"fs.rmSync('dist', {recursive: true, force: true})\"",
     "local-build": "npm run package && npx @vscode/vsce package",
@@ -152,5 +217,5 @@
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json"
   },
-  "version": "0.1.0-local.16"
+  "version": "0.1.0-local.23"
 }

@@ -6,11 +6,12 @@ import { SessionTracker } from './SessionTracker';
 import { ChatProvider } from './ChatProvider';
 import { CostStatusBar } from './CostStatusBar';
 import { log } from './Logger';
-import { ModelConfig, ReasoningEffort } from './types';
+import { ModelConfig, ReasoningEffort, ConfigurableModel } from './types';
 
 export interface RegistrationResult extends vscode.Disposable {
   readonly tracker: SessionTracker;
   readonly listReasoningModels: () => Array<{ id: string; name: string }>;
+  readonly listConfigurableModels: () => ConfigurableModel[];
 }
 
 export async function registerAll(
@@ -72,6 +73,8 @@ export async function registerAll(
       }
       return out.sort((a, b) => a.name.localeCompare(b.name));
     },
+    listConfigurableModels: () =>
+      registry.getConfigurable().slice().sort((a, b) => a.name.localeCompare(b.name)),
     dispose() {
       providerDisposable.dispose();
       registry.dispose();

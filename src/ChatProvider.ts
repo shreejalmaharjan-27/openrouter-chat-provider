@@ -3,11 +3,29 @@ import { ModelRegistry } from './ModelRegistry';
 import { OpenRouterClient } from './OpenRouterClient';
 import { SessionTracker } from './SessionTracker';
 import { convertMessages, convertTools } from './messageConverter';
-import { handleStream } from './streamHandler';
+import { readFileSync, statSync } from 'node:fs';
+import { isAbsolute, join, basename } from 'node:path';
+import { homedir } from 'node:os';
+import { handleStream, SafetyOptions } from './streamHandler';
+import { assessLocal, listMatch, extractScriptRefs, decodeBase64Candidates, DEFAULT_SAFETY_PROMPT, RISK_RANK, Risk, Verdict } from './commandSafety';
 import { log } from './Logger';
 import { ModelEntry } from './types';
-import type { ChatStreamChunk, ChatToolChoice } from '@openrouter/sdk/models';
+import type { ChatStreamChunk, ChatToolChoice, ChatMessages } from '@openrouter/sdk/models';
 import { ChatToolChoiceRequired, ChatToolChoiceAuto } from '@openrouter/sdk/models';
+
+const SAFETY_TIMEOUT_MS = 6000;
+const SCRIPT_READ_MAX_BYTES = 200_000;
+const SCRIPT_CONTEXT_PER_FILE = 8000;
+const SCRIPT_CONTEXT_TOTAL = 16000;
+const SCRIPT_MAX_FILES = 4;
+
+interface CommandSafetyConfig {
+  useAi: boolean;
+  model: string;
+  prompt: string;
+  allowList: string[];
+  denyList: string[];
+}
 
 function describeApiError(err: unknown): { msg: string; isAuth: boolean; isPayment: boolean; isRate: boolean } {
   const e = err as { error?: { code?: number; message?: string; metadata?: Record<string, unknown> }; message?: string; statusCode?: number; status?: number; body?: string };
@@ -30,6 +48,16 @@ function mapToolChoice(toolMode: vscode.LanguageModelChatToolMode | undefined): 
   return toolMode === vscode.LanguageModelChatToolMode.Required
     ? ChatToolChoiceRequired.Required
     : ChatToolChoiceAuto.Auto;
+}
+
+function normalizeRisk(value: unknown): Risk | undefined {
+  if (value === 'green' || value === 'orange' || value === 'red') {
+    return value;
+  }
+  if (value === 'yellow') {
+    return 'orange';
+  }
+  return undefined;
 }
 
 export class ChatProvider implements vscode.LanguageModelChatProvider<ModelEntry> {
@@ -64,6 +92,7 @@ export class ChatProvider implements vscode.LanguageModelChatProvider<ModelEntry
     progress: vscode.Progress<vscode.LanguageModelResponsePart>,
     token: vscode.CancellationToken,
   ): Promise<void> {
+    const orModelId = model.orModelId;
     const effort = model.effort;
     const toolChoice = mapToolChoice(options.toolMode);
 
@@ -75,14 +104,14 @@ export class ChatProvider implements vscode.LanguageModelChatProvider<ModelEntry
       ? convertTools(options.tools)
       : undefined;
 
-    log.info(`chat request: model=${model.orModelId} effort=${effort ?? 'none'} msgs=${orMessages.length} tools=${orTools?.length ?? 0} cacheControl=${model.cacheControl}`);
+    log.info(`chat request: model=${orModelId} effort=${effort ?? 'none'} msgs=${orMessages.length} tools=${orTools?.length ?? 0} cacheControl=${model.cacheControl}`);
 
     const abort = new AbortController();
     token.onCancellationRequested(() => abort.abort());
 
     let stream: AsyncIterable<ChatStreamChunk>;
     try {
-      stream = await this.client.streamChat(model.orModelId, orMessages, {
+      stream = await this.client.streamChat(orModelId, orMessages, {
         effort,
         toolChoice,
         tools: orTools,
@@ -112,9 +141,172 @@ export class ChatProvider implements vscode.LanguageModelChatProvider<ModelEntry
       throw new Error(`ORCP: ${msg}`);
     }
 
-    const turnRecord = await handleStream(stream, progress, token);
+    const turnRecord = await handleStream(stream, progress, token, this.buildSafetyOptions());
 
     this.tracker.addTurn(turnRecord);
+  }
+
+  private buildSafetyOptions(): SafetyOptions | undefined {
+    const cfg = vscode.workspace.getConfiguration('orcp');
+    if (cfg.get<boolean>('commandSafety.enabled', true) === false) {
+      return undefined;
+    }
+    const minLevel = (cfg.get<string>('commandSafety.minLevelToShow', 'green') as Risk);
+    const modalOnRed = cfg.get<boolean>('commandSafety.modalOnRed', false);
+    const safety: CommandSafetyConfig = {
+      useAi: cfg.get<boolean>('commandSafety.aiEvaluation', true),
+      model: (cfg.get<string>('commandSafety.model', '') ?? '').trim(),
+      prompt: (cfg.get<string>('commandSafety.prompt', '') ?? '').trim() || DEFAULT_SAFETY_PROMPT,
+      allowList: cfg.get<string[]>('commandSafety.allowList', []) ?? [],
+      denyList: cfg.get<string[]>('commandSafety.denyList', []) ?? [],
+    };
+
+    return {
+      minLevel,
+      modalOnRed,
+      assess: (command: string, writtenFiles: Map<string, string>) => this.assessCommand(command, safety, writtenFiles),
+    };
+  }
+
+  private async assessCommand(command: string, safety: CommandSafetyConfig, writtenFiles: Map<string, string>): Promise<Verdict> {
+    // User lists win and skip the model entirely. Deny takes precedence over allow.
+    if (listMatch(command, safety.denyList)) {
+      return { risk: 'red', reason: 'Matches your command blocklist.' };
+    }
+    if (listMatch(command, safety.allowList)) {
+      return { risk: 'green', reason: 'Matches your command allowlist.' };
+    }
+
+    // If the command runs a script/file, read it so its actual behavior (incl.
+    // obfuscated payloads) is judged — not just the innocent-looking command line.
+    const scriptContext = this.gatherScriptContext(command, writtenFiles);
+
+    // By default every command is evaluated by the model; local rules are the
+    // fallback when AI is off, no model is set, or the call fails/times out.
+    if (safety.useAi && safety.model) {
+      try {
+        const modelVerdict = await this.classifyWithModel(command, safety.model, safety.prompt, scriptContext);
+        if (modelVerdict) {
+          return modelVerdict;
+        }
+      } catch (err) {
+        log.warn('command-safety model evaluation failed; using local rules:', err);
+      }
+    }
+
+    // Local fallback: worst of the command itself and any executed script body.
+    let verdict = assessLocal(command).verdict;
+    if (scriptContext) {
+      const scriptVerdict = assessLocal(scriptContext).verdict;
+      if (RISK_RANK[scriptVerdict.risk] > RISK_RANK[verdict.risk]) {
+        verdict = { risk: scriptVerdict.risk, reason: `Executed script: ${scriptVerdict.reason}` };
+      }
+    }
+    return verdict;
+  }
+
+  // Resolve and read the script files a command executes. Prefers files written
+  // this turn (in `writtenFiles`); otherwise reads from disk relative to the
+  // workspace / any `cd` directory. Returns a capped, labelled blob or undefined.
+  private gatherScriptContext(command: string, writtenFiles: Map<string, string>): string | undefined {
+    const { dirs, files } = extractScriptRefs(command);
+    if (files.length === 0) {
+      return undefined;
+    }
+    const roots = (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
+    const baseDirs = [
+      ...dirs.flatMap((d) => (isAbsolute(d) ? [d] : roots.map((r) => join(r, d)))),
+      ...roots,
+    ];
+
+    const chunks: string[] = [];
+    const readLog: string[] = [];
+    let total = 0;
+    for (const ref of files.slice(0, SCRIPT_MAX_FILES)) {
+      const hit = this.readScriptFile(ref, baseDirs, writtenFiles);
+      if (hit === undefined) {
+        readLog.push(`${ref}=not-found`);
+        continue;
+      }
+      const capped = hit.content.slice(0, SCRIPT_CONTEXT_PER_FILE);
+      chunks.push(`--- ${ref} ---\n${capped}`);
+      total += capped.length;
+      readLog.push(`${ref}=${hit.source}:${capped.length}b`);
+      if (total >= SCRIPT_CONTEXT_TOTAL) {
+        break;
+      }
+    }
+    log.info(`command-safety: script refs ${JSON.stringify(files)} → ${readLog.join(', ') || 'none'}`);
+    return chunks.length > 0 ? chunks.join('\n\n') : undefined;
+  }
+
+  private readScriptFile(ref: string, baseDirs: string[], writtenFiles: Map<string, string>): { content: string; source: string } | undefined {
+    // 1. A file the agent wrote this turn (may not be on disk yet).
+    for (const [p, c] of writtenFiles) {
+      if (p === ref || basename(p) === basename(ref) || p.endsWith(ref) || ref.endsWith(p)) {
+        return { content: c, source: 'written-this-turn' };
+      }
+    }
+    // 2. On disk.
+    const expanded = ref.startsWith('~/') ? join(homedir(), ref.slice(2)) : ref;
+    const candidates = isAbsolute(expanded) ? [expanded] : baseDirs.map((b) => join(b, expanded));
+    for (const candidate of candidates) {
+      try {
+        const st = statSync(candidate);
+        if (st.isFile() && st.size <= SCRIPT_READ_MAX_BYTES) {
+          return { content: readFileSync(candidate, 'utf8'), source: 'disk' };
+        }
+      } catch {
+        // not here; try next
+      }
+    }
+    return undefined;
+  }
+
+  private async classifyWithModel(command: string, modelId: string, instruction: string, scriptContext?: string): Promise<Verdict | undefined> {
+    const orModelId = this.registry.get(modelId)?.orModelId ?? modelId.split('::')[0];
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), SAFETY_TIMEOUT_MS);
+    try {
+      const scriptBlock = scriptContext
+        ? `\n\nThe command executes the following local file(s). Judge based on what they actually do, including obfuscated/encoded execution:\n${scriptContext}`
+        : '';
+      const decoded = decodeBase64Candidates(command);
+      const decodedBlock = decoded.length > 0
+        ? `\n\nThe command contains base64 that decodes to (judge the DECODED intent):\n${decoded.map((d) => `\`\`\`\n${d.slice(0, 800)}\n\`\`\``).join('\n')}`
+        : '';
+      const prompt = `${instruction}\n\nCommand:\n\`\`\`\n${command}\n\`\`\`${scriptBlock}${decodedBlock}`;
+      const messages: ChatMessages[] = [{ role: 'user', content: prompt }];
+      const stream = await this.client.streamChat(
+        orModelId,
+        messages,
+        { effort: null, toolChoice: ChatToolChoiceAuto.Auto, maxTokens: 200 },
+        abort.signal,
+      );
+      let text = '';
+      for await (const chunk of stream as AsyncIterable<ChatStreamChunk>) {
+        const content = chunk.choices?.[0]?.delta?.content;
+        if (content) {
+          text += content;
+        }
+      }
+      const match = text.match(/\{[\s\S]*\}/);
+      if (!match) {
+        return undefined;
+      }
+      const parsed = JSON.parse(match[0]) as { risk?: unknown; reason?: unknown };
+      const risk = normalizeRisk(parsed.risk);
+      if (!risk) {
+        return undefined;
+      }
+      const reason = typeof parsed.reason === 'string' && parsed.reason.trim()
+        ? parsed.reason.trim()
+        : 'Assessed by model.';
+      log.info(`command-safety model verdict: ${risk} for "${command.slice(0, 80)}"`);
+      return { risk, reason };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async provideTokenCount(

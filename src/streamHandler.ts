@@ -1,6 +1,7 @@
 import vscode from 'vscode';
 import { log } from './Logger';
 import { TurnRecord } from './types';
+import { Risk, Verdict, RISK_RANK, isTerminalTool, renderVerdict } from './commandSafety';
 import type {
   ChatStreamChunk,
   ChatStreamDelta,
@@ -13,10 +14,43 @@ interface ToolCallBuffer {
   argsBuffer: string;
 }
 
+export interface SafetyOptions {
+  minLevel: Risk;
+  modalOnRed: boolean;
+  assess: (command: string, writtenFiles: Map<string, string>) => Promise<Verdict>;
+}
+
+function extractCommand(args: object): string | undefined {
+  const cmd = (args as { command?: unknown }).command;
+  return typeof cmd === 'string' && cmd.trim() ? cmd : undefined;
+}
+
+function firstString(obj: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const k of keys) {
+    const v = obj[k];
+    if (typeof v === 'string' && v.length > 0) {
+      return v;
+    }
+  }
+  return undefined;
+}
+
+// Generic, tool-name-agnostic detection of a file write: any tool call whose
+// arguments carry both a path-like field and a content-like field. Captures
+// files the agent creates in the SAME turn so we can inspect them before a
+// later terminal command runs them.
+function extractWrittenFile(args: object): { path: string; content: string } | undefined {
+  const a = args as Record<string, unknown>;
+  const path = firstString(a, ['filePath', 'path', 'file', 'uri', 'fileName', 'absolutePath', 'targetFile']);
+  const content = firstString(a, ['content', 'code', 'contents', 'newText', 'text', 'newContent', 'fileContent']);
+  return path && content ? { path, content } : undefined;
+}
+
 export async function handleStream(
   stream: AsyncIterable<ChatStreamChunk>,
   progress: vscode.Progress<vscode.LanguageModelResponsePart>,
   token: vscode.CancellationToken,
+  safety?: SafetyOptions,
 ): Promise<TurnRecord> {
   let generationId = '';
   let orModelId = '';
@@ -144,6 +178,10 @@ export async function handleStream(
     }
   }
 
+  // Parse every tool call's args once, and collect files written this turn so the
+  // safety assessor can inspect scripts a terminal command later executes.
+  const parsedCalls: Array<{ buffer: ToolCallBuffer; args: object }> = [];
+  const writtenFiles = new Map<string, string>();
   for (const [, buffer] of toolCallBuffers) {
     let parsedArgs: object = {};
     try {
@@ -152,6 +190,38 @@ export async function handleStream(
       }
     } catch {
       parsedArgs = {};
+    }
+    parsedCalls.push({ buffer, args: parsedArgs });
+    const written = extractWrittenFile(parsedArgs);
+    if (written) {
+      writtenFiles.set(written.path, written.content);
+    }
+  }
+  if (safety && writtenFiles.size > 0) {
+    log.info(`command-safety: files written this turn: ${JSON.stringify([...writtenFiles.keys()])}`);
+  }
+
+  for (const { buffer, args: parsedArgs } of parsedCalls) {
+    // Emit an advisory safety verdict immediately above terminal-command cards.
+    if (safety && isTerminalTool(buffer.name)) {
+      const command = extractCommand(parsedArgs);
+      if (command) {
+        try {
+          const verdict = await safety.assess(command, writtenFiles);
+          if (RISK_RANK[verdict.risk] >= RISK_RANK[safety.minLevel]) {
+            progress.report(new vscode.LanguageModelTextPart(renderVerdict(verdict)));
+          }
+          if (verdict.risk === 'red' && safety.modalOnRed) {
+            void vscode.window.showWarningMessage(
+              `Unsafe command: ${command}\n\n${verdict.reason}`,
+              { modal: true },
+              'OK',
+            );
+          }
+        } catch (err) {
+          log.warn('command-safety assessment failed; forwarding tool call unannotated:', err);
+        }
+      }
     }
 
     const toolCallPart = new vscode.LanguageModelToolCallPart(buffer.id, buffer.name, parsedArgs);

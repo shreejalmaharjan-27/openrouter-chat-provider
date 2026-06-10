@@ -11,5 +11,8 @@
   "include": [
     "src/**/*",
     "vscode.proposed.languageModelThinkingPart.d.ts"
+  ],
+  "exclude": [
+    "src/webview/**"
   ]
 }

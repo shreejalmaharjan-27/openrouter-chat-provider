@@ -2,6 +2,7 @@ import vscode from 'vscode';
 import { SecretsManager } from './SecretsManager';
 import { registerAll } from './registry';
 import type { RegistrationResult } from './registry';
+import { SettingsPanel } from './SettingsPanel';
 import { log } from './Logger';
 
 let current: RegistrationResult | undefined;
@@ -80,6 +81,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         ? existing.effortLevels.join(', ')
         : '(none — only the base entry will appear)';
       vscode.window.showInformationMessage(`ORCP: ${pickedModel.label} effort variants → ${summary}`);
+    }),
+
+    vscode.commands.registerCommand('orcp.openSettings', () => {
+      SettingsPanel.show(context, secrets, () => current);
     }),
   );
 

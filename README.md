@@ -93,7 +93,7 @@ code --list-extensions --show-versions
 
 ## Session cost status bar
 
-A status-bar item on the right shows running session cost and turn count (e.g. `$0.0234 · 4 turns`). Click it to see a breakdown of tokens by category (prompt / completion / reasoning) and reset the counter. Cost is taken from OpenRouter's per-turn usage reporting; the counter resets when the extension reloads.
+A status-bar item on the right shows running session cost and turn count with a gear (e.g. `$0.0234 · 4 turns ⚙`). Click it to open the settings page, which includes a live breakdown of tokens by category (prompt / completion / reasoning) and a reset button. Cost is taken from OpenRouter's per-turn usage reporting; the counter resets when the extension reloads.
 
 ## Tips for DeepSeek users (cheap / free)
 
@@ -220,13 +220,51 @@ Supported fields:
 - `only` — array of provider names; requests are pinned to these.
 - `allow_fallbacks` — boolean; whether routing can fall back to other providers on failure.
 
+### Command safety (`orcp.commandSafety.*`)
+
+Shows an inline 🟢 **Safe** / 🟠 **Caution** / 🔴 **Unsafe** verdict with a one-line reason **above every terminal command the agent proposes**, rendered as assistant markdown right above the command's confirmation card.
+
+This is our own, fully independent feature — it does **not** depend on GitHub Copilot's built-in risk badge, its quota, or `chat.utilitySmallModel`. (We tried routing the core feature to a chosen model; the request never reaches a BYOK provider — see `risk-assessment-diagnostic-report.md`.) It is **advisory only**: it cannot cancel execution; you still approve via the normal confirmation card.
+
+```json
+{
+  "orcp.commandSafety.enabled": true,
+  "orcp.commandSafety.minLevelToShow": "green",
+  "orcp.commandSafety.aiEvaluation": true,
+  "orcp.commandSafety.model": "openai/gpt-4o-mini",
+  "orcp.commandSafety.prompt": "",
+  "orcp.commandSafety.allowList": ["npm run", "git status", "ls"],
+  "orcp.commandSafety.denyList": ["rm -rf", "git push --force"],
+  "orcp.commandSafety.modalOnRed": false
+}
+```
+
+- `enabled` (default `true`) — master toggle.
+- `minLevelToShow` (`green` | `orange` | `red`, default `green`) — only annotate at/above this severity. `green` annotates everything (including read-only); set `orange` to suppress notes on safe commands.
+- `aiEvaluation` (default `true`) — evaluate **every** command with the model below for the best verdict. Turn off (or leave `model` empty) to use only the fast built-in local rules.
+- `model` (default `""`) — model id (from this provider) used for evaluation. Pick a **fast, cheap** model — it runs on every terminal command. Reasoning is forced off and the call is time-limited (~6s); on timeout/error it falls back to the local rules.
+- `prompt` (default `""`) — override the instruction sent to the model (the command is appended automatically). Empty = built-in default. Must instruct the model to reply with strict JSON `{"risk":"green|orange|red","reason":"..."}`. The settings page has a "Load built-in default to edit" button.
+- `allowList` / `denyList` (default `[]`) — command **prefixes** (matched on a word boundary, e.g. `git status`, `rm -rf`) that are always forced 🟢 / 🔴 respectively, **skipping the model**. The block list wins over the allow list.
+- `modalOnRed` (default `false`) — additionally pop a blocking warning dialog for 🔴 unsafe commands (still advisory).
+
+Order of evaluation: **block list → allow list → model (if on) → local rules**. The built-in local rules (`git push --force`, `rm -rf` on source paths, `curl … | sh` and base64/obfuscated `… | sh` → red; `npm install`, `mkdir`, redirects → orange; `ls`/`cat`/`git status` → green) are always the fallback.
+
+**Script inspection.** When a command runs or sources a local file (e.g. `python parse.py`, `bash deploy.sh`, `./run.sh`, `source x.sh`), the actual file contents are read — both files the agent just wrote and files already on disk — and folded into the verdict. This catches harmful or obfuscated payloads hidden inside a script that the innocent-looking command line wouldn't reveal (base64-decode-and-exec, `eval`/`exec` of encoded data, destructive commands in the file body).
+
+All of these are editable from the **settings page** (`ORCP: Open Settings`) without touching JSON.
+
+## Settings page
+
+Instead of editing JSON, run **`ORCP: Open Settings`** (or click the ⚙ gear on the cost status-bar item) to open a single page where you can set your API key, base URL, provider routing, default effort levels, command-safety options, per-model enable/effort/cache toggles, and view live session usage. Every change is written straight to your `settings.json` (`orcp.*`) keys, so the page and manual JSON editing stay in sync.
+
 ## Commands
 
 | Command | Description |
 |---------|-------------|
+| `ORCP: Open Settings` | Open the settings page (API key, models, command safety, provider routing, session usage); also opened by clicking the status bar |
 | `ORCP: Set API Key` | Store your OpenRouter API key (encrypted in the OS keychain via VSCode's secret API) |
 | `ORCP: Clear API Key` | Remove the stored API key |
-| `ORCP: Show Session Details` | Token breakdown + cost for the current session; also triggered by clicking the status bar |
+| `ORCP: Show Session Details` | Token breakdown + cost for the current session (also shown in the settings page) |
 | `ORCP: Configure Reasoning Effort for a Model` | Quick Pick to toggle effort variants per model without editing settings JSON |
 | `ORCP: Reload Extension` | Re-run the registration flow — refetches the model list and reapplies config |
 

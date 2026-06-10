@@ -1,5 +1,5 @@
 import vscode from 'vscode';
-import { ModelEntry, ModelConfig, ReasoningEffort } from './types';
+import { ModelEntry, ModelConfig, ReasoningEffort, ConfigurableModel } from './types';
 import type { Model } from '@openrouter/sdk/models';
 import { Parameter, InputModality, OutputModality } from '@openrouter/sdk/models';
 
@@ -17,19 +17,18 @@ function capitalize(s: string): string {
 
 export class ModelRegistry {
   private entries = new Map<string, ModelEntry>();
+  private candidates: ConfigurableModel[] = [];
 
   readonly onDidChange = new vscode.EventEmitter<void>();
 
   rebuild(rawModels: Model[], modelConfigs: Record<string, ModelConfig>, defaultEffortLevels: ReasoningEffort[] = []): void {
     this.entries.clear();
+    this.candidates = [];
 
     for (const model of rawModels) {
       const config = modelConfigs[model.id];
-      if (config && config.enabled === false) {
-        continue;
-      }
 
-      // Skip models that don't support text input and output, as they can't be used for chat completions. 
+      // Skip models that don't support text input and output, as they can't be used for chat completions.
       if (!model.architecture.inputModalities.includes(InputModality.Text) ||
         !model.architecture.outputModalities.includes(OutputModality.Text)) {
         continue;
@@ -42,6 +41,15 @@ export class ModelRegistry {
 
       const supportsImageInput = model.architecture.inputModalities.includes(InputModality.Image);
       const supportsReasoning = model.supportedParameters.includes(Parameter.Reasoning);
+
+      // Every model passing the text+tool filters is configurable from the settings
+      // page, even when disabled — so the user can re-enable it.
+      this.candidates.push({ id: model.id, name: model.name, supportsReasoning });
+
+      if (config && config.enabled === false) {
+        continue;
+      }
+
       const maxOutputTokens = model.topProvider.maxCompletionTokens ?? 4096;
       const cacheControl = config?.cacheControl ?? false;
       const isFree = model.id.endsWith(':free');
@@ -109,6 +117,14 @@ export class ModelRegistry {
 
   getAll(): ModelEntry[] {
     return Array.from(this.entries.values());
+  }
+
+  get(id: string): ModelEntry | undefined {
+    return this.entries.get(id);
+  }
+
+  getConfigurable(): ConfigurableModel[] {
+    return this.candidates;
   }
 
   dispose(): void {
